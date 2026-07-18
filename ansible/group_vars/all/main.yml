@@ -66,19 +66,12 @@ pihole_interface: eth0
 # If the vault var is undefined the admin password is left unset.
 pihole_web_password: "{{ vault_pihole_web_password | default('') }}"
 
-# Ad/tracker blocklists (gravity adlists).
-pihole_adlists:
-  - https://v.firebog.net/hosts/Easyprivacy.txt
-  - https://v.firebog.net/hosts/Easylist.txt
-  - https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews-gambling-porn-social/hosts
-  - https://github.com/anudeepND/blacklist/raw/master/adservers.txt
-  - https://nsfw.oisd.nl
-  - https://big.oisd.nl
-  - https://raw.githubusercontent.com/kboghdady/youTube_ads_4_pi-hole/refs/heads/master/black.list
-
-# Remote allowlists (fetched and applied as exact/regex allow entries).
-pihole_allowlist_urls:
-  - https://raw.githubusercontent.com/anudeepND/whitelist/refs/heads/master/domains/whitelist.txt
+# Blocklists, allowlists, and remote allowlist subscriptions live in plain,
+# commented text files you can edit directly — see roles/pihole/files/:
+#   adlists.txt         blocklists (gravity) — one URL per line, # comments ok
+#   allow.list          allowed domains (exact + regex), one per line
+#   allowlist-urls.txt  remote allowlists to fetch and allow
+# The pihole role reconciles them into Pi-hole via its REST API.
 
 # pi-hole points its single upstream at the local unbound instance.
 pihole_dns_upstream: "{{ unbound_listen_address }}#{{ unbound_listen_port }}"

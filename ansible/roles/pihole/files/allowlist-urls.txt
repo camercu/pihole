@@ -1,0 +1,5 @@
+# Remote allowlists: URLs whose domains are fetched and added as ALLOW entries.
+# Useful to undo false positives from aggressive blocklists.
+# One URL per line. Blank lines and lines after '#' are ignored.
+
+https://raw.githubusercontent.com/anudeepND/whitelist/refs/heads/master/domains/whitelist.txt
