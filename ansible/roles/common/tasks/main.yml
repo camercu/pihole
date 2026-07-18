@@ -1,0 +1,53 @@
+---
+- name: Set hostname
+  ansible.builtin.hostname:
+    name: "{{ pihole_hostname }}"
+
+- name: Set system timezone
+  community.general.timezone:
+    name: "{{ system_timezone }}"
+
+- name: Generate US locale
+  community.general.locale_gen:
+    name: "{{ system_locale }}"
+    state: present
+
+- name: Set default system locale
+  ansible.builtin.copy:
+    dest: /etc/default/locale
+    content: "LANG={{ system_locale }}\nLC_ALL={{ system_locale }}\n"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install authorised SSH keys for {{ ansible_user }}
+  ansible.posix.authorized_key:
+    user: "{{ ansible_user }}"
+    key: "{{ item }}"
+    state: present
+  loop: "{{ authorized_ssh_keys }}"
+  when: authorized_ssh_keys | length > 0
+
+- name: Update apt cache and upgrade all packages
+  ansible.builtin.apt:
+    update_cache: true
+    upgrade: full
+    cache_valid_time: 3600
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ common_packages }}"
+    state: present
+
+- name: Remove unused packages and purge apt cache
+  ansible.builtin.apt:
+    autoremove: true
+    autoclean: true
+
+- name: Manage /etc/hosts
+  ansible.builtin.template:
+    src: hosts.j2
+    dest: /etc/hosts
+    owner: root
+    group: root
+    mode: "0644"

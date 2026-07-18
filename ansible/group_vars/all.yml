@@ -1,0 +1,84 @@
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Single source of truth for the Pi-hole box. Every role reads from here so the
+# whole deployment is described in one place and reproducible from a bare SD.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# --- host identity ---------------------------------------------------------
+pihole_hostname: pihole
+system_timezone: America/New_York
+system_locale: en_US.UTF-8
+
+# SSH public keys authorised for the ansible_user (paste your pubkey lines).
+# Leave empty to skip key management.
+authorized_ssh_keys: []
+#  - "ssh-ed25519 AAAA... you@host"
+
+# Base packages installed on every host by the `common` role.
+common_packages:
+  - neovim
+
+# --- LAN hosts (drives /etc/hosts and unbound local A records) --------------
+# name: first token is the canonical hostname; the rest are aliases.
+lan_hosts:
+  - ip: 192.168.0.1
+    names: [router, router.home.arpa]
+  - ip: 192.168.0.9
+    names: [pihole, pi.hole, pihole.home.arpa]
+  - ip: 192.168.0.11
+    names: [jcu-nas2, jcu-nas2.home.arpa]
+
+# --- unbound ----------------------------------------------------------------
+# Kept as an encrypted DoT *forwarder* (not recursive-to-root) so upstream
+# families-filtering is preserved. See roles/unbound/templates/pihole.conf.j2.
+unbound_listen_address: 127.0.0.1
+unbound_listen_port: 5553
+unbound_private_addresses:
+  - 192.168.0.0/16
+  - 169.254.0.0/16
+  - 172.16.0.0/12
+  - 10.0.0.0/8
+  - fd00::/8
+  - fe80::/10
+
+# Upstream DoT resolvers (addr@port). Order = preference.
+unbound_forward_addrs:
+  - { addr: "1.1.1.3@853", comment: "cloudflare families DoT primary" }
+  - { addr: "1.0.0.3@853", comment: "cloudflare families DoT secondary" }
+  - { addr: "9.9.9.9@853", comment: "quad9 DoT primary" }
+  - { addr: "149.112.112.112@853", comment: "quad9 DoT secondary" }
+  - { addr: "8.8.8.8@853", comment: "google DoT primary" }
+  - { addr: "8.8.4.4@853", comment: "google DoT secondary" }
+
+# Local A records served by unbound (in addition to lan_hosts split-horizon).
+unbound_local_records:
+  - { name: "pi.hole", ip: "192.168.0.9" }
+  - { name: "router.home.arpa", ip: "192.168.0.1" }
+
+# Enable SafeSearch enforcement (generated into unbound by safesearch role task).
+unbound_safesearch_enabled: true
+
+# --- pi-hole ----------------------------------------------------------------
+# Network interface Pi-hole binds to (used only at first unattended install).
+pihole_interface: eth0
+
+# Web admin password. Empty => leave unset (set it later with `pihole setpassword`).
+# Prefer supplying via ansible-vault rather than committing a real password.
+pihole_web_password: ""
+
+# Ad/tracker blocklists (gravity adlists).
+pihole_adlists:
+  - https://v.firebog.net/hosts/Easyprivacy.txt
+  - https://v.firebog.net/hosts/Easylist.txt
+  - https://raw.githubusercontent.com/StevenBlack/hosts/master/alternates/fakenews-gambling-porn-social/hosts
+  - https://github.com/anudeepND/blacklist/raw/master/adservers.txt
+  - https://nsfw.oisd.nl
+  - https://big.oisd.nl
+  - https://raw.githubusercontent.com/kboghdady/youTube_ads_4_pi-hole/refs/heads/master/black.list
+
+# Remote allowlists (fetched and applied as exact/regex allow entries).
+pihole_allowlist_urls:
+  - https://raw.githubusercontent.com/anudeepND/whitelist/refs/heads/master/domains/whitelist.txt
+
+# pi-hole points its single upstream at the local unbound instance.
+pihole_dns_upstream: "{{ unbound_listen_address }}#{{ unbound_listen_port }}"
