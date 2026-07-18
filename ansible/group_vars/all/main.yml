@@ -22,7 +22,7 @@ common_packages:
 lan_hosts:
   - ip: 192.168.0.1
     names: [router, router.home.arpa]
-  - ip: 192.168.0.9
+  - ip: 192.168.0.2
     names: [pihole, pi.hole, pihole.home.arpa]
   - ip: 192.168.0.11
     names: [jcu-nas2, jcu-nas2.home.arpa]
@@ -51,7 +51,7 @@ unbound_forward_addrs:
 
 # Local A records served by unbound (in addition to lan_hosts split-horizon).
 unbound_local_records:
-  - { name: "pi.hole", ip: "192.168.0.9" }
+  - { name: "pi.hole", ip: "192.168.0.2" }
   - { name: "router.home.arpa", ip: "192.168.0.1" }
 
 # Enable SafeSearch enforcement (generated into unbound by safesearch role task).
@@ -61,9 +61,10 @@ unbound_safesearch_enabled: true
 # Network interface Pi-hole binds to (used only at first unattended install).
 pihole_interface: eth0
 
-# Web admin password. Empty => leave unset (set it later with `pihole setpassword`).
-# Prefer supplying via ansible-vault rather than committing a real password.
-pihole_web_password: ""
+# Web admin / API password. The real value lives encrypted in
+# group_vars/all/vault.yml as vault_pihole_web_password (see README "Secrets").
+# If the vault var is undefined the admin password is left unset.
+pihole_web_password: "{{ vault_pihole_web_password | default('') }}"
 
 # Ad/tracker blocklists (gravity adlists).
 pihole_adlists:
