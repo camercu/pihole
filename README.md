@@ -106,31 +106,24 @@ nix-shell --run 'cd ansible && ansible-lint'
 
 ## Changing configuration
 
-Shared, non-secret settings live in `ansible/group_vars/all/main.yml`:
+**Blocklists / allowlists** are plain, commented text files under
+`ansible/roles/pihole/files/` — edit them directly:
 
-- **Blocklists** — `pihole_adlists`
-- **Remote allowlists** — `pihole_allowlist_urls`
-- **Local allow entries** (exact + regex) — `ansible/roles/pihole/files/allow.list`
+- `adlists.txt` — blocklists (gravity), one URL per line
+- `allow.list` — allowed domains, exact or regex, one per line
+- `allowlist-urls.txt` — remote allowlists to fetch and allow
+
+Other shared settings live in `ansible/group_vars/all/main.yml`:
+
 - **Upstream resolvers** — `unbound_forward_addrs`
 - **Local DNS / LAN hosts** — `lan_hosts`, `unbound_local_records`
 
-Edit, re-run the playbook, done. List changes trigger a gravity rebuild
-automatically.
-
-## ⚠️ Verify on first real apply
-
-I could not run this against your actual Pi, and Pi-hole **v6** (what a fresh
-install gives you in 2026) changed its config store and CLI. The following are
-built against the version-stable `gravity.db` schema but should be confirmed on
-the box during the first run:
-
-- **List application** (`roles/pihole/files/apply-lists.sh`) — inserts adlists
-  and allow entries via `sqlite3` then runs `pihole -g`. Check the entries land
-  in the admin UI.
-- **Upstream enforcement** (`Point Pi-hole upstream at local unbound (v6)`) —
-  uses `pihole-FTL --config dns.upstreams`. Confirm the key/CLI on your version;
-  `failed_when: false` keeps it non-fatal meanwhile.
-- **Web password** — uses `pihole setpassword`.
+Edit, re-run the playbook (or `./setup.sh`), done. The pihole role reconciles
+lists into Pi-hole through its **REST API** (`pihole-sync-lists.py`): it adds
+what's missing, removes what it previously added but is no longer listed, and
+rebuilds gravity only when adlists actually change. It's declarative and
+idempotent — a no-op run makes no changes. A remote allowlist that fails to
+download is never treated as "removed", so a network blip can't wipe entries.
 
 ## Secrets (Ansible Vault)
 
