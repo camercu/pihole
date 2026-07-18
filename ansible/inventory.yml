@@ -1,12 +1,10 @@
 ---
-# Single Pi. Adjust ansible_host / ansible_user to match your box.
-# First boot uses password auth; after the `common` role installs your key,
-# switch to key-only and remove ansible_ssh_pass usage.
+# The one Pi. Connection details (ansible_host, ansible_user, ssh key) are
+# per-user and live in the gitignored group_vars/all/local.yml, which ./setup.sh
+# generates on first run. See group_vars/all/local.yml.example.
 all:
   children:
     pihole:
       hosts:
         pi:
-          ansible_host: pihole.local
-          ansible_user: pi
           ansible_python_interpreter: /usr/bin/python3

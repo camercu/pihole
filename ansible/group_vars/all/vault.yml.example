@@ -1,0 +1,4 @@
+---
+# Shape of the encrypted vault.yml that ./setup.sh generates (gitignored).
+# The real file is Ansible-Vault ciphertext, not plaintext like this.
+vault_pihole_web_password: "your-pi-hole-admin-password"
