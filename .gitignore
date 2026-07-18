@@ -1,0 +1,4 @@
+# Ansible runtime artifacts
+.ansible/
+*.retry
+ansible/collections/
