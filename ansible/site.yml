@@ -15,3 +15,5 @@
       tags: [maintenance]
     - role: backup # weekly Teleporter export -> restic on the NAS (opt-in)
       tags: [backup]
+    - role: hardening # firewall, drop unused services, force HTTPS admin
+      tags: [hardening]
