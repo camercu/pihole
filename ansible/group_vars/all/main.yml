@@ -31,7 +31,7 @@ lan_hosts:
 # Kept as an encrypted DoT *forwarder* (not recursive-to-root) so upstream
 # families-filtering is preserved. See roles/unbound/templates/pihole.conf.j2.
 unbound_listen_address: 127.0.0.1
-unbound_listen_port: 5553
+unbound_listen_port: 5335 # Pi-hole's documented default unbound port
 unbound_private_addresses:
   - 192.168.0.0/16
   - 169.254.0.0/16
