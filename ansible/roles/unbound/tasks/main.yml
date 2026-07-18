@@ -1,0 +1,73 @@
+---
+- name: Install unbound
+  ansible.builtin.apt:
+    name: unbound
+    state: present
+
+- name: Ensure unbound log directory exists
+  ansible.builtin.file:
+    path: /var/log/unbound
+    state: directory
+    owner: unbound
+    group: unbound
+    mode: "0755"
+
+- name: Deploy root hints
+  ansible.builtin.get_url:
+    url: https://www.internic.net/domain/named.root
+    dest: /var/lib/unbound/root.hints
+    owner: unbound
+    group: unbound
+    mode: "0644"
+    force: false # refreshed on a schedule by the maintenance role
+  notify: Restart unbound
+
+- name: Deploy main unbound config (DoT forwarder)
+  ansible.builtin.template:
+    src: pihole.conf.j2
+    dest: /etc/unbound/unbound.conf.d/pihole.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: unbound-checkconf %s
+  notify: Restart unbound
+
+- name: Deploy DNSSEC root trust anchor config
+  ansible.builtin.copy:
+    src: root-auto-trust-anchor-file.conf
+    dest: /etc/unbound/unbound.conf.d/root-auto-trust-anchor-file.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart unbound
+
+- name: Deploy local A records
+  ansible.builtin.template:
+    src: custom-dns-records.conf.j2
+    dest: /etc/unbound/unbound.conf.d/custom-dns-records.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart unbound
+
+- name: Install SafeSearch generator script
+  ansible.builtin.copy:
+    src: safesearchify.sh
+    dest: /usr/local/bin/safesearchify.sh
+    owner: root
+    group: root
+    mode: "0755"
+  when: unbound_safesearch_enabled
+
+- name: Generate SafeSearch config if missing
+  ansible.builtin.command:
+    cmd: /usr/local/bin/safesearchify.sh
+    creates: /etc/unbound/unbound.conf.d/safesearch.conf
+  when: unbound_safesearch_enabled
+  notify: Restart unbound
+
+- name: Enable and start unbound
+  ansible.builtin.systemd_service:
+    name: unbound
+    enabled: true
+    state: started

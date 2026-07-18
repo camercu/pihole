@@ -1,0 +1,77 @@
+{# Managed by Ansible (roles/unbound). Edit vars in group_vars/all.yml. #}
+## DNS Over TLS, simple ENCRYPTED forwarding + caching resolver, TCP port 853.
+# Modified from:
+#   https://docs.pi-hole.net/guides/dns/unbound/
+#   https://bartonbytes.com/posts/configure-pi-hole-for-dns-over-tls/
+
+server:
+    # If no logfile is specified, syslog is used
+    logfile: "/var/log/unbound/unbound.log"
+    log-time-ascii: yes
+    verbosity: 1
+
+    interface: {{ unbound_listen_address }}
+    port: {{ unbound_listen_port }}
+    do-ip4: yes     # listen and request on ipv4
+    do-ip6: yes     # listen and request on ipv6
+    do-udp: yes     # listen and request on udp
+    do-tcp: yes     # listen and request on tcp
+
+    # Use DNS over TLS for upstream queries
+    ssl-upstream: yes
+
+    # Leave this 'no' unless you have *native* IPv6. With 6to4 and Teredo
+    # tunnels your browser should favour IPv4 for the same reasons.
+    prefer-ip6: no
+
+    access-control: 127.0.0.0/8 allow
+
+    # If you use the default dns-root-data package, unbound finds root hints
+    # automatically. This path is refreshed by the maintenance timer.
+    root-hints: "/var/lib/unbound/root.hints"
+
+    # Trust glue only if it is within the server's authority
+    harden-glue: yes
+
+    # Require DNSSEC data for trust-anchored zones; absent data => BOGUS
+    harden-dnssec-stripped: yes
+
+    # Don't use capitalisation randomisation; known to cause DNSSEC issues.
+    # https://discourse.pi-hole.net/t/unbound-stubby-or-dnscrypt-proxy/9378
+    use-caps-for-id: no
+
+    # Reduce EDNS reassembly buffer size to avoid unreliable IP fragmentation
+    # on the Internet today (DNS Flag Day 2020 recommendation).
+    edns-buffer-size: 1232
+
+    # Prefetch close-to-expired cache entries for frequently queried domains.
+    prefetch: yes
+
+    # One thread is plenty for a single small network.
+    num-threads: 1
+
+    # Ensure kernel buffer is large enough to survive traffic spikes.
+    so-rcvbuf: 1m
+
+    # Ensure privacy of local IP ranges
+{% for net in unbound_private_addresses %}
+    private-address: {{ net }}
+{% endfor %}
+
+    hide-identity: yes      # refuse id.server and hostname.bind queries
+    hide-version: yes       # refuse version.server and version.bind queries
+
+    # Send the minimum QNAME info upstream to enhance privacy.
+    # RFC 7816 "DNS Query Name Minimisation to Improve Privacy".
+    qname-minimisation: yes
+
+    # Omit non-required authority/additional sections; smaller responses,
+    # fewer TCP fallbacks.
+    minimal-responses: yes
+
+    forward-zone:
+        name: "."
+        forward-tls-upstream: yes
+{% for up in unbound_forward_addrs %}
+        forward-addr: {{ "%-22s" | format(up.addr) }} # {{ up.comment }}
+{% endfor %}
