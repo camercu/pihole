@@ -1,0 +1,45 @@
+---
+# Scheduled upkeep, ported from the original crontab.root. Kept as cron (not
+# systemd timers) to stay close to the working setup; the cron module is
+# idempotent and self-documenting via the name/comment.
+
+- name: Nightly gravity (blocklist) refresh
+  ansible.builtin.cron:
+    name: pihole gravity refresh
+    minute: "0"
+    hour: "3"
+    user: root
+    job: /usr/local/bin/pihole -g
+
+- name: Refresh unbound root hints
+  ansible.builtin.cron:
+    name: unbound root hints refresh
+    minute: "15"
+    hour: "3"
+    user: root
+    job: /usr/bin/wget https://www.internic.net/domain/named.root -qO /var/lib/unbound/root.hints
+
+- name: Nightly system package upgrade
+  ansible.builtin.cron:
+    name: apt full-upgrade
+    minute: "15"
+    hour: "3"
+    user: root
+    job: /usr/bin/apt update && /usr/bin/apt full-upgrade -y && /usr/bin/apt autoremove -y && /usr/bin/apt autoclean -y
+
+- name: Daily Pi-hole self-update
+  ansible.builtin.cron:
+    name: pihole self update
+    minute: "0"
+    hour: "7"
+    user: root
+    job: /usr/local/bin/pihole -up
+
+- name: Weekly reboot (Friday)
+  ansible.builtin.cron:
+    name: weekly reboot
+    minute: "45"
+    hour: "3"
+    weekday: FRI
+    user: root
+    job: /sbin/reboot
