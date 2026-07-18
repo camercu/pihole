@@ -1,0 +1,5 @@
+{# Managed by Ansible (roles/unbound). Edit unbound_local_records in group_vars. #}
+server:
+{% for rec in unbound_local_records %}
+  local-data: "{{ rec.name }} A {{ rec.ip }}"
+{% endfor %}
