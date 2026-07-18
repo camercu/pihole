@@ -1,0 +1,10 @@
+{# Managed by Ansible (roles/backup). #}
+[Unit]
+Description=Pi-hole backup (Teleporter export -> restic)
+After=network-online.target pihole-FTL.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/pihole-backup/env
+ExecStart=/usr/local/bin/pihole-backup.py

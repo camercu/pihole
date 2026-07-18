@@ -1,0 +1,75 @@
+---
+# Weekly Pi-hole backup: Teleporter export -> restic on the NAS over SFTP.
+# Entirely gated on backup_enabled so the playbook stays green until the NAS is
+# reachable and the restic password is vaulted (see README "Backups").
+- name: Backup role
+  when: backup_enabled | bool
+  block:
+    - name: Install restic
+      ansible.builtin.apt:
+        name: restic
+        state: present
+
+    - name: Create backup config directory
+      ansible.builtin.file:
+        path: /etc/pihole-backup
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Deploy backup environment file
+      ansible.builtin.template:
+        src: backup-env.j2
+        dest: /etc/pihole-backup/env
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true # contains restic + Pi-hole passwords
+
+    - name: Deploy backup script
+      ansible.builtin.copy:
+        src: pihole-backup.py
+        dest: /usr/local/bin/pihole-backup.py
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Initialise restic repository if absent
+      ansible.builtin.command:
+        cmd: restic cat config
+      environment:
+        RESTIC_REPOSITORY: "{{ restic_repository }}"
+        RESTIC_PASSWORD: "{{ restic_password }}"
+      register: backup_restic_check
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Create restic repository
+      ansible.builtin.command:
+        cmd: restic init
+      environment:
+        RESTIC_REPOSITORY: "{{ restic_repository }}"
+        RESTIC_PASSWORD: "{{ restic_password }}"
+      when: backup_restic_check.rc != 0
+      no_log: true
+      changed_when: true
+
+    - name: Deploy backup service and timer
+      ansible.builtin.template:
+        src: "{{ item }}"
+        dest: "/etc/systemd/system/{{ item | replace('.j2', '') }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop:
+        - pihole-backup.service.j2
+        - pihole-backup.timer.j2
+
+    - name: Enable and start the weekly backup timer
+      ansible.builtin.systemd_service:
+        name: pihole-backup.timer
+        enabled: true
+        state: started
+        daemon_reload: true

@@ -75,3 +75,16 @@ pihole_web_password: "{{ vault_pihole_web_password | default('') }}"
 
 # pi-hole points its single upstream at the local unbound instance.
 pihole_dns_upstream: "{{ unbound_listen_address }}#{{ unbound_listen_port }}"
+
+# --- backups (restic -> jcu-nas2 over SFTP, weekly) -------------------------
+# Off until the NAS is reachable, you've filled in the SSH details below, given
+# the Pi SSH access to the NAS, and added vault_restic_password to the vault.
+# See README "Backups". Flip to true, then re-run.
+backup_enabled: false
+backup_nas_host: jcu-nas2 # 192.168.0.11
+backup_nas_user: "" # SSH user on the NAS
+backup_nas_path: "" # absolute path to the restic repo on the NAS
+restic_repository: "sftp:{{ backup_nas_user }}@{{ backup_nas_host }}:{{ backup_nas_path }}"
+restic_password: "{{ vault_restic_password | default('') }}"
+restic_keep_weekly: 8
+backup_oncalendar: "Sun *-*-* 04:30:00" # weekly, Sunday 04:30
