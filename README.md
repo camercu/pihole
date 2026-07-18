@@ -178,3 +178,26 @@ Pi-hole admin UI (Settings → Teleporter) or the API. A dead SD card becomes a
 flash → `./setup.sh` → import recovery.
 
 Run a backup on demand: `sudo systemctl start pihole-backup.service`.
+
+## Security
+
+The `hardening` role applies host security that survives rebuilds — chosen for
+zero/low usability cost:
+
+- **Host firewall** (`ufw`): default-deny inbound, allowing only the LAN
+  (`hardening_lan_subnet`) to SSH (22), DNS (53), admin HTTPS (443), and mDNS
+  (5353).
+- **Removes `rpcbind`** (port 111) — unused without NFS; a known amplification
+  vector.
+- **Disables Pi-hole FTL's NTP server** (port 123); the clock still syncs via
+  `systemd-timesyncd`.
+- **Forces HTTPS** for the admin UI — plain HTTP is bound to loopback only (so
+  the local reconciler API still works); LAN admin must use `https://`.
+- **`PermitRootLogin no`** — log in as the normal user and `sudo`.
+
+Already in place by design: Pi-hole answers only the local subnet (not an open
+resolver), SSH is key-only (`PasswordAuthentication no`), Unbound does DNSSEC
+validation with hardening flags, the upstream is DNS-over-TLS, and the admin
+password is set. Security patches are applied by `unattended-upgrades`.
+
+Change the allowed subnet via `hardening_lan_subnet` in `group_vars/all/main.yml`.
