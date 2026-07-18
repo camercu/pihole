@@ -19,13 +19,27 @@
     user: root
     job: /usr/bin/wget https://www.internic.net/domain/named.root -qO /var/lib/unbound/root.hints
 
-- name: Nightly system package upgrade
+# OS security patches are handled by unattended-upgrades (below), NOT a cron
+# full-upgrade — security-only is safer than pulling every package unattended,
+# and unattended-upgrades self-locks so it won't collide with other apt jobs.
+- name: Remove the old cron full-upgrade (superseded by unattended-upgrades)
   ansible.builtin.cron:
     name: apt full-upgrade
-    minute: "15"
-    hour: "3"
     user: root
-    job: /usr/bin/apt update && /usr/bin/apt full-upgrade -y && /usr/bin/apt autoremove -y && /usr/bin/apt autoclean -y
+    state: absent
+
+- name: Install unattended-upgrades
+  ansible.builtin.apt:
+    name: unattended-upgrades
+    state: present
+
+- name: Enable periodic security updates
+  ansible.builtin.copy:
+    src: 20auto-upgrades
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    owner: root
+    group: root
+    mode: "0644"
 
 - name: Daily Pi-hole self-update
   ansible.builtin.cron:

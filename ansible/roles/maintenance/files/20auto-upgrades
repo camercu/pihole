@@ -1,0 +1,7 @@
+// Managed by Ansible (roles/maintenance).
+// Refresh package lists daily and apply security upgrades unattended.
+// Reboots are handled by the weekly-reboot cron, so auto-reboot stays off
+// (Debian's default 50unattended-upgrades applies security origins only).
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
