@@ -1,0 +1,10 @@
+{# Managed by Ansible (roles/backup). #}
+[Unit]
+Description=Weekly Pi-hole backup
+
+[Timer]
+OnCalendar={{ backup_oncalendar }}
+Persistent=true
+
+[Install]
+WantedBy=timers.target

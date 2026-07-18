@@ -44,6 +44,7 @@ ansible/
     unbound/                # install + config templates, root hints, SafeSearch
     pihole/                 # unattended install, upstream→unbound, adlists/allowlists
     maintenance/            # cron: gravity/root-hints/apt/self-update refresh, reboot
+    backup/                 # weekly Teleporter export -> restic on the NAS (opt-in)
 ```
 
 ## Quick start (one command)
@@ -149,8 +150,31 @@ nix-shell --run 'cd ansible && ansible-vault rekey group_vars/all/vault.yml'
 ⚠️ Back up the **passphrase** (password manager) — lose it and the encrypted
 file is unrecoverable.
 
-## Backups (not yet implemented)
+## Backups
 
-Recommended next role: a daily `restic`/`rsync` of `/etc/pihole` and
-`/etc/dnsmasq.d` (or the whole config) to `jcu-nas2` (192.168.0.11). That turns
-a dead SD card into a ~10-minute recovery: flash → run playbook → restore.
+The `backup` role exports a Pi-hole **Teleporter** bundle (all config: adlists,
+allow/deny, DHCP, settings) via the API and stores it weekly in a **restic**
+repository on `jcu-nas2` over SFTP — encrypted, deduplicated, incremental. A
+`pihole-backup.timer` runs it Sunday 04:30; retention keeps 8 weekly snapshots.
+
+It's **off by default** (`backup_enabled: false`) so the playbook stays green
+until the NAS is set up. To enable:
+
+1. **Give the Pi SSH access to the NAS** — the Pi's root user must be able to
+   `ssh <nas_user>@jcu-nas2` non-interactively (install a key).
+2. **Add the restic repo password to the vault:**
+   ```bash
+   nix-shell --run 'cd ansible && ansible-vault edit group_vars/all/vault.yml'
+   # add:  vault_restic_password: "a-strong-passphrase"
+   ```
+3. **Fill in the NAS details** in `group_vars/all/main.yml`: `backup_nas_user`,
+   `backup_nas_path`, and set `backup_enabled: true`.
+4. **Run the playbook.** It installs restic, `restic init`s the repo if needed,
+   and enables the weekly timer.
+
+Restore (on a fresh Pi, after `./setup.sh`): pull the latest snapshot with
+`restic restore latest --target /tmp/restore`, then import the `.zip` via the
+Pi-hole admin UI (Settings → Teleporter) or the API. A dead SD card becomes a
+flash → `./setup.sh` → import recovery.
+
+Run a backup on demand: `sudo systemctl start pihole-backup.service`.
