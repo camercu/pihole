@@ -1,0 +1,15 @@
+---
+# Full rebuild of the Pi-hole box from a fresh Raspberry Pi OS Lite install.
+#   nix-shell --run 'ansible-playbook site.yml'
+- name: Provision Pi-hole + Unbound DNS host
+  hosts: pihole
+  become: true
+  roles:
+    - role: common # hostname, base packages, /etc/hosts, ssh keys
+      tags: [common]
+    - role: unbound # encrypted DoT forwarder + local records + safesearch
+      tags: [unbound]
+    - role: pihole # Pi-hole install, adlists, allowlists, upstream -> unbound
+      tags: [pihole]
+    - role: maintenance # scheduled gravity/updates/root.hints refresh + reboot
+      tags: [maintenance]

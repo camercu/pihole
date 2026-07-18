@@ -1,0 +1,12 @@
+---
+# Single Pi. Adjust ansible_host / ansible_user to match your box.
+# First boot uses password auth; after the `common` role installs your key,
+# switch to key-only and remove ansible_ssh_pass usage.
+all:
+  children:
+    pihole:
+      hosts:
+        pi:
+          ansible_host: 192.168.0.9
+          ansible_user: pi
+          ansible_python_interpreter: /usr/bin/python3
