@@ -1,0 +1,105 @@
+---
+- name: Install Pi-hole runtime dependencies
+  ansible.builtin.apt:
+    name:
+      - curl
+      - sqlite3
+    state: present
+
+- name: Check whether Pi-hole is already installed
+  ansible.builtin.stat:
+    path: /usr/local/bin/pihole
+  register: pihole_bin
+
+- name: Ensure /etc/pihole exists
+  ansible.builtin.file:
+    path: /etc/pihole
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Pre-seed setupVars for unattended install
+  ansible.builtin.template:
+    src: setupVars.conf.j2
+    dest: /etc/pihole/setupVars.conf
+    owner: root
+    group: root
+    mode: "0644"
+  when: not pihole_bin.stat.exists
+
+- name: Download Pi-hole installer
+  ansible.builtin.get_url:
+    url: https://install.pi-hole.net
+    dest: /tmp/pihole-install.sh
+    mode: "0755"
+  when: not pihole_bin.stat.exists
+
+- name: Run Pi-hole unattended install
+  ansible.builtin.command:
+    cmd: bash /tmp/pihole-install.sh --unattended
+  environment:
+    PIHOLE_SKIP_OS_CHECK: "true"
+  when: not pihole_bin.stat.exists
+  changed_when: true
+
+# NOTE (verify on first real apply): Pi-hole v6 stores upstreams in pihole.toml,
+# not setupVars. This enforces unbound as the sole upstream on existing installs.
+# Confirm the FTL config key/CLI on your box; adjust if the command differs.
+- name: Point Pi-hole upstream at local unbound (v6)
+  ansible.builtin.command:
+    cmd: >-
+      pihole-FTL --config dns.upstreams
+      '["{{ pihole_dns_upstream }}"]'
+  register: pihole_ftl_upstream
+  changed_when: '"127.0.0.1" not in pihole_ftl_upstream.stdout | default("")'
+  failed_when: false
+
+- name: Set Pi-hole web admin password
+  ansible.builtin.command:
+    cmd: pihole setpassword "{{ pihole_web_password }}"
+  when: pihole_web_password | length > 0
+  no_log: true
+  changed_when: true
+
+- name: Deploy managed adlists file
+  ansible.builtin.template:
+    src: managed-adlists.txt.j2
+    dest: /etc/pihole/managed-adlists.txt
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Apply Pi-hole lists
+
+- name: Deploy managed remote-allowlist URLs file
+  ansible.builtin.template:
+    src: managed-allowlist-urls.txt.j2
+    dest: /etc/pihole/managed-allowlist-urls.txt
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Apply Pi-hole lists
+
+- name: Deploy local allow.list
+  ansible.builtin.copy:
+    src: allow.list
+    dest: /etc/pihole/managed-allow.list
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Apply Pi-hole lists
+
+- name: Deploy list-application script
+  ansible.builtin.copy:
+    src: apply-lists.sh
+    dest: /usr/local/bin/pihole-apply-lists.sh
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Apply Pi-hole lists
+
+- name: Enable and start Pi-hole FTL
+  ansible.builtin.systemd_service:
+    name: pihole-FTL
+    enabled: true
+    state: started

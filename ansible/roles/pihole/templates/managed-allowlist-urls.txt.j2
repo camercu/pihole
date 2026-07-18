@@ -1,0 +1,4 @@
+{# Managed by Ansible (roles/pihole). Edit pihole_allowlist_urls in group_vars/all.yml. #}
+{% for url in pihole_allowlist_urls %}
+{{ url }}
+{% endfor %}

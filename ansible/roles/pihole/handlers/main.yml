@@ -1,0 +1,5 @@
+---
+- name: Apply Pi-hole lists
+  ansible.builtin.command:
+    cmd: /usr/local/bin/pihole-apply-lists.sh
+  changed_when: true
