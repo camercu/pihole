@@ -2,3 +2,10 @@
 .ansible/
 *.retry
 ansible/collections/
+
+# Vault passphrase file — NEVER commit (the encrypted vault.yml is fine to commit)
+.vault-pass
+ansible/.vault-pass
+
+# Claude
+.claude/

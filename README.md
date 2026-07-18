@@ -106,6 +106,39 @@ the box during the first run:
   `failed_when: false` keeps it non-fatal meanwhile.
 - **Web password** — uses `pihole setpassword`.
 
+## Secrets (Ansible Vault)
+
+The Pi-hole admin / API password is stored **encrypted** in
+`group_vars/all/vault.yml` as `vault_pihole_web_password`; `main.yml` references
+it via `pihole_web_password`. The encrypted file is safe to commit — the
+passphrase that decrypts it never is.
+
+**One-time setup:**
+
+```bash
+# 1. Save your vault passphrase to the gitignored key file (or skip this and
+#    use --ask-vault-pass to type it each run).
+printf '%s' 'YOUR_VAULT_PASSPHRASE' > ansible/.vault-pass && chmod 600 ansible/.vault-pass
+
+# 2. Create the encrypted vars file and add the Pi-hole password.
+nix-shell --run 'cd ansible && ansible-vault create group_vars/all/vault.yml'
+#    In the editor, add one line:
+#      vault_pihole_web_password: "YOUR_PIHOLE_ADMIN_PASSWORD"
+
+# 3. Commit it — it's ciphertext.
+git add ansible/group_vars/all/vault.yml && git commit -m "chore: add vaulted pihole password"
+```
+
+**Daily use:** `direnv` auto-exports `ANSIBLE_VAULT_PASSWORD_FILE` when
+`ansible/.vault-pass` exists, so `ansible-playbook site.yml` just works. Without
+direnv, add `--ask-vault-pass` (prompt) or `--vault-password-file .vault-pass`.
+
+- Edit later: `ansible-vault edit group_vars/all/vault.yml`
+- Rotate the passphrase: `ansible-vault rekey group_vars/all/vault.yml`
+- ⚠️ Back up the **passphrase** itself (password manager) — lose it and the
+  encrypted file is unrecoverable. The key file `ansible/.vault-pass` is
+  gitignored; don't commit it.
+
 ## Backups (not yet implemented)
 
 Recommended next role: a daily `restic`/`rsync` of `/etc/pihole` and
