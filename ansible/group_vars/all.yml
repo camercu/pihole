@@ -9,10 +9,9 @@ pihole_hostname: pihole
 system_timezone: America/New_York
 system_locale: en_US.UTF-8
 
-# SSH public keys authorised for the ansible_user (paste your pubkey lines).
-# Leave empty to skip key management.
-authorized_ssh_keys: []
-#  - "ssh-ed25519 AAAA... you@host"
+# SSH public keys authorised for the ansible_user (public keys, safe to commit).
+authorized_ssh_keys:
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAEscluzR8Y8O1P2my3b/tehmU4dWlTKCWa9Veyt6xdM pihole"
 
 # Base packages installed on every host by the `common` role.
 common_packages:
