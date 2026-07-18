@@ -1,0 +1,86 @@
+---
+# Security hardening for the Pi-hole host. Each item is low/zero usability cost
+# (see README "Security"). Idempotent: FTL config is read before it is set.
+
+# --- 1. rpcbind: unused (no NFS) attack surface + amplification vector --------
+- name: Remove rpcbind (no NFS in use)
+  ansible.builtin.apt:
+    name: rpcbind
+    state: absent
+    purge: true
+    autoremove: true
+
+# --- 2. Pi-hole FTL's built-in NTP server, exposed on all interfaces ----------
+- name: Read FTL NTP server state
+  ansible.builtin.command:
+    cmd: pihole-FTL --config ntp.ipv4.active
+  register: hardening_ntp_state
+  changed_when: false
+
+- name: Disable FTL NTP server (client sync via timesyncd is unaffected)
+  ansible.builtin.command:
+    cmd: "pihole-FTL --config {{ item }} false"
+  loop:
+    - ntp.ipv4.active
+    - ntp.ipv6.active
+  when: "'true' in hardening_ntp_state.stdout"
+  changed_when: true
+  notify: Restart pihole-FTL
+
+# --- 3. Force HTTPS for LAN admin; keep loopback HTTP for the local API -------
+- name: Read current webserver.port
+  ansible.builtin.command:
+    cmd: pihole-FTL --config webserver.port
+  register: hardening_webport
+  changed_when: false
+
+- name: Bind plain HTTP to loopback only, HTTPS on all interfaces
+  ansible.builtin.command:
+    cmd: "pihole-FTL --config webserver.port {{ hardening_webserver_port }}"
+  when: hardening_webport.stdout | trim != hardening_webserver_port
+  changed_when: true
+
+# --- 4. sshd: no root login (use the unprivileged user + sudo) ----------------
+- name: Harden sshd via drop-in
+  ansible.builtin.copy:
+    src: 99-hardening.conf
+    dest: /etc/ssh/sshd_config.d/99-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+    validate: sshd -t -f %s
+  notify: Reload sshd
+
+# --- 5. Host firewall: default-deny, allow only LAN to needed services --------
+- name: Install ufw
+  ansible.builtin.apt:
+    name: ufw
+    state: present
+
+- name: Default deny incoming
+  community.general.ufw:
+    direction: incoming
+    policy: deny
+
+- name: Default allow outgoing
+  community.general.ufw:
+    direction: outgoing
+    policy: allow
+
+- name: Allow LAN access to required services
+  community.general.ufw:
+    rule: allow
+    src: "{{ hardening_lan_subnet }}"
+    port: "{{ item.port }}"
+    proto: "{{ item.proto }}"
+    comment: "{{ item.comment }}"
+  loop:
+    - { port: "22", proto: tcp, comment: SSH }
+    - { port: "53", proto: tcp, comment: DNS }
+    - { port: "53", proto: udp, comment: DNS }
+    - { port: "443", proto: tcp, comment: "Pi-hole admin (HTTPS)" }
+    - { port: "5353", proto: udp, comment: mDNS }
+
+- name: Enable ufw
+  community.general.ufw:
+    state: enabled
