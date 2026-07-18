@@ -1,0 +1,36 @@
+# Pi-hole blocklists (gravity adlists).
+# One URL per line. Blank lines and lines after '#' are ignored.
+# Edit freely, then re-run the playbook (or ./setup.sh) to apply.
+
+# Core (standalone)
+https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/pro.txt
+
+# Threat Intelligence
+https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/tif.medium.txt
+
+# Apple telemetry
+https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/native.apple.txt
+
+# Windows telemetry
+https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/native.winoffice.txt
+
+# Smart TVs (LG, Samsung, Roku, Vizio, etc.)
+https://perflyst.github.io/PiHoleBlocklist/SmartTV.txt
+
+# Gambling
+https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/gambling.txt
+
+# Adult content
+https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/nsfw.txt
+
+# Amazon (Fire TV, Echo, Kindle)
+https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/native.amazon.txt
+
+# TikTok
+https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/native.tiktok.txt
+
+# Xiaomi
+https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/native.xiaomi.txt
+
+# Huawei
+https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/native.huawei.txt

@@ -62,41 +62,46 @@
   no_log: true
   changed_when: true
 
-- name: Deploy managed adlists file
-  ansible.builtin.template:
-    src: managed-adlists.txt.j2
-    dest: /etc/pihole/managed-adlists.txt
-    owner: root
-    group: root
-    mode: "0644"
-  notify: Apply Pi-hole lists
-
-- name: Deploy managed remote-allowlist URLs file
-  ansible.builtin.template:
-    src: managed-allowlist-urls.txt.j2
-    dest: /etc/pihole/managed-allowlist-urls.txt
-    owner: root
-    group: root
-    mode: "0644"
-  notify: Apply Pi-hole lists
-
-- name: Deploy local allow.list
-  ansible.builtin.copy:
-    src: allow.list
-    dest: /etc/pihole/managed-allow.list
-    owner: root
-    group: root
-    mode: "0644"
-  notify: Apply Pi-hole lists
-
-- name: Deploy list-application script
-  ansible.builtin.copy:
-    src: apply-lists.sh
-    dest: /usr/local/bin/pihole-apply-lists.sh
+- name: Ensure managed list-config directory exists
+  ansible.builtin.file:
+    path: /etc/pihole/managed
+    state: directory
     owner: root
     group: root
     mode: "0755"
-  notify: Apply Pi-hole lists
+
+- name: Deploy list config (adlists, allowlist, allowlist URLs)
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/etc/pihole/managed/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - adlists.txt
+    - allow.list
+    - allowlist-urls.txt
+
+- name: Deploy list reconciler
+  ansible.builtin.copy:
+    src: pihole-sync-lists.py
+    dest: /usr/local/bin/pihole-sync-lists.py
+    owner: root
+    group: root
+    mode: "0755"
+
+# Reconciles adlists/allowlists into Pi-hole via the FTL REST API (adds missing,
+# removes ours no longer in config), then rebuilds gravity only if adlists
+# changed. Idempotent: prints CHANGED only when it altered something.
+- name: Reconcile Pi-hole lists via API
+  ansible.builtin.command:
+    cmd: /usr/local/bin/pihole-sync-lists.py
+  environment:
+    PIHOLE_PASSWORD: "{{ pihole_web_password }}"
+    PIHOLE_DIR: /etc/pihole/managed
+  register: pihole_sync
+  changed_when: "'CHANGED' in pihole_sync.stdout"
+  no_log: true # PIHOLE_PASSWORD in the environment
 
 - name: Enable and start Pi-hole FTL
   ansible.builtin.systemd_service:
