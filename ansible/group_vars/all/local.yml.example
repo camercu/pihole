@@ -1,0 +1,15 @@
+---
+# Per-user connection config. ./setup.sh writes the real (gitignored) local.yml
+# from prompts on first run; this file just documents the shape.
+
+# How Ansible reaches the Pi.
+ansible_host: pihole.local # mDNS name, IP, or raspberrypi.local on a fresh Pi
+ansible_user: pi # the Linux user you set when flashing the SD card
+
+# SSH auth — either point at a private key you already have...
+# ansible_ssh_private_key_file: ~/.ssh/pihole_rsa
+# ...or omit it and let ./setup.sh use password auth (-k).
+
+# Public keys to install for ansible_user (so future logins are key-based).
+authorized_ssh_keys: []
+#  - "ssh-ed25519 AAAA... you@laptop"

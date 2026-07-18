@@ -46,22 +46,51 @@ ansible/
     maintenance/            # cron: gravity/root-hints/apt/self-update refresh, reboot
 ```
 
-## Prerequisites
+## Quick start (one command)
 
-- [Nix](https://nixos.org/download) on your control machine (Mac/Linux). All
-  tooling runs through `nix-shell` so ansible versions don't drift.
-- A Pi reachable over SSH. Set `ansible_host` / `ansible_user` in
-  `ansible/inventory.yml`.
-- Your SSH public key in `authorized_ssh_keys` (`group_vars/all.yml`) if you
-  want key auth managed for you.
+For a fresh Pi handed to anyone — including a non-technical person:
 
-With [direnv](https://direnv.net/): `direnv allow` drops you into the env
-automatically. Otherwise prefix commands with `nix-shell --run '…'`.
+1. **Flash the SD card** with Raspberry Pi Imager. In its settings (gear icon):
+   set hostname `pihole`, enable SSH, and set a username + password (or your
+   SSH key). Boot the Pi and connect it to the network.
+2. **Run the setup command** from this repo:
 
-## Usage
+   ```bash
+   ./setup.sh
+   ```
+
+No Nix or Ansible install needed — on a plain Mac with Python, `setup.sh`
+bootstraps [`uv`](https://docs.astral.sh/uv/) and runs Ansible in an isolated
+environment automatically. (If you already have Nix, it uses that instead.)
+
+That's it. On the first run it asks for:
+
+- a **vault passphrase** (encrypts your saved passwords),
+- a **Pi-hole admin password** (also used for the API),
+- **how to reach the Pi** (address, SSH user),
+
+stores them locally (never committed), then provisions everything. Re-runs
+reuse the saved answers and go straight to provisioning.
+
+Everyone who uses this repo gets their **own** passwords — the answers live in
+gitignored files (`ansible/.vault-pass`, `group_vars/all/{vault,local}.yml`), so
+nothing personal is shared when the repo is.
+
+## Prerequisites (manual / advanced)
+
+`./setup.sh` handles the below for you; reach for these only to run Ansible
+directly:
+
+- [Nix](https://nixos.org/download) — all tooling runs through `nix-shell`.
+- A Pi reachable over SSH; connection set in `group_vars/all/local.yml` (copy
+  `local.yml.example`).
+- Vault passphrase in `ansible/.vault-pass` (see **Secrets**).
+
+With [direnv](https://direnv.net/): `direnv allow` loads the env (and the vault
+key) automatically. Otherwise prefix commands with `nix-shell --run '…'`.
 
 ```bash
-# Full rebuild from a fresh Pi:
+# Full rebuild (same as ./setup.sh once configured):
 nix-shell --run 'cd ansible && ansible-playbook site.yml'
 
 # Preview without changing anything:
@@ -75,12 +104,9 @@ nix-shell --run 'cd ansible && ansible-playbook --syntax-check site.yml'
 nix-shell --run 'cd ansible && ansible-lint'
 ```
 
-First run may prompt for the SSH password (`-k`) and sudo (`-K`) until your key
-is installed and passwordless sudo is set up.
-
 ## Changing configuration
 
-Everything lives in `ansible/group_vars/all.yml`:
+Shared, non-secret settings live in `ansible/group_vars/all/main.yml`:
 
 - **Blocklists** — `pihole_adlists`
 - **Remote allowlists** — `pihole_allowlist_urls`
@@ -108,36 +134,27 @@ the box during the first run:
 
 ## Secrets (Ansible Vault)
 
-The Pi-hole admin / API password is stored **encrypted** in
-`group_vars/all/vault.yml` as `vault_pihole_web_password`; `main.yml` references
-it via `pihole_web_password`. The encrypted file is safe to commit — the
-passphrase that decrypts it never is.
+`./setup.sh` creates these for you; this section is for editing them later.
 
-**One-time setup:**
+The Pi-hole admin / API password is stored **encrypted** in the gitignored
+`group_vars/all/vault.yml` as `vault_pihole_web_password`; `main.yml` reads it
+via `pihole_web_password`. The passphrase that decrypts it lives in the
+(gitignored) `ansible/.vault-pass`. Neither leaves your machine — each user of
+the repo has their own.
+
+`direnv` auto-exports `ANSIBLE_VAULT_PASSWORD_FILE` when `ansible/.vault-pass`
+exists, so Ansible commands just work. Without direnv, add `--ask-vault-pass`.
 
 ```bash
-# 1. Save your vault passphrase to the gitignored key file (or skip this and
-#    use --ask-vault-pass to type it each run).
-printf '%s' 'YOUR_VAULT_PASSPHRASE' > ansible/.vault-pass && chmod 600 ansible/.vault-pass
+# Change the stored password:
+nix-shell --run 'cd ansible && ansible-vault edit group_vars/all/vault.yml'
 
-# 2. Create the encrypted vars file and add the Pi-hole password.
-nix-shell --run 'cd ansible && ansible-vault create group_vars/all/vault.yml'
-#    In the editor, add one line:
-#      vault_pihole_web_password: "YOUR_PIHOLE_ADMIN_PASSWORD"
-
-# 3. Commit it — it's ciphertext.
-git add ansible/group_vars/all/vault.yml && git commit -m "chore: add vaulted pihole password"
+# Rotate the passphrase itself:
+nix-shell --run 'cd ansible && ansible-vault rekey group_vars/all/vault.yml'
 ```
 
-**Daily use:** `direnv` auto-exports `ANSIBLE_VAULT_PASSWORD_FILE` when
-`ansible/.vault-pass` exists, so `ansible-playbook site.yml` just works. Without
-direnv, add `--ask-vault-pass` (prompt) or `--vault-password-file .vault-pass`.
-
-- Edit later: `ansible-vault edit group_vars/all/vault.yml`
-- Rotate the passphrase: `ansible-vault rekey group_vars/all/vault.yml`
-- ⚠️ Back up the **passphrase** itself (password manager) — lose it and the
-  encrypted file is unrecoverable. The key file `ansible/.vault-pass` is
-  gitignored; don't commit it.
+⚠️ Back up the **passphrase** (password manager) — lose it and the encrypted
+file is unrecoverable.
 
 ## Backups (not yet implemented)
 
