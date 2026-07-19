@@ -88,7 +88,7 @@
 
 - name: Deploy list reconciler
   ansible.builtin.copy:
-    src: pihole-sync-lists.py
+    src: pihole_sync_lists.py
     dest: /usr/local/bin/pihole-sync-lists.py
     owner: root
     group: root
