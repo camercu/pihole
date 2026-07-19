@@ -1,0 +1,13 @@
+---
+# Network interface Pi-hole binds to (used only at first unattended install).
+pihole_interface: eth0
+
+# pi-hole's single upstream is the local unbound instance (ports in group_vars).
+pihole_dns_upstream: "{{ unbound_listen_address }}#{{ unbound_listen_port }}"
+
+# Blocklists, allowlists, and remote allowlist subscriptions live in plain,
+# commented text files you edit directly — see roles/pihole/files/:
+#   adlists.txt         blocklists (gravity) — one URL per line, # comments ok
+#   allow.list          allowed domains (exact + regex), one per line
+#   allowlist-urls.txt  remote allowlists to fetch and allow
+# The role reconciles them into Pi-hole via its REST API.

@@ -1,0 +1,6 @@
+---
+# LAN subnet allowed through the host firewall to SSH/DNS/HTTPS/mDNS.
+hardening_lan_subnet: 192.168.0.0/24
+# Pi-hole webserver bind: plain HTTP on loopback only (for the local API the
+# reconciler uses), HTTPS on all interfaces (LAN admin is forced to TLS).
+hardening_webserver_port: "127.0.0.1:80o,443os,[::]:443os"
