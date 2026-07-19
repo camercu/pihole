@@ -1,0 +1,4 @@
+---
+# Base packages installed on every host.
+common_packages:
+  - neovim

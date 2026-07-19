@@ -118,13 +118,16 @@ nix-shell --run 'cd ansible && ansible-lint'
 - `allow.list` — allowed domains, exact or regex, one per line
 - `allowlist-urls.txt` — remote allowlists to fetch and allow
 
-Other shared settings live in `ansible/group_vars/all/main.yml`:
+Other settings live with the role that owns them (each `roles/<role>/defaults/
+main.yml`), while site facts and cross-role values are in
+`ansible/group_vars/all/main.yml`:
 
-- **Upstream resolvers** — `unbound_forward_addrs`
-- **Local DNS / LAN hosts** — `lan_hosts`, `unbound_local_records`
+- **Upstream resolvers** — `unbound_forward_addrs` (`roles/unbound/defaults/`)
+- **Local DNS records** — `unbound_local_records` (`roles/unbound/defaults/`)
+- **LAN hosts / `/etc/hosts`** — `lan_hosts` (`group_vars/all/main.yml`)
 
 Edit, re-run the playbook (or `./setup.sh`), done. The pihole role reconciles
-lists into Pi-hole through its **REST API** (`pihole-sync-lists.py`): it adds
+lists into Pi-hole through its **REST API** (`pihole_sync_lists.py`): it adds
 what's missing, removes what it previously added but is no longer listed, and
 rebuilds gravity only when adlists actually change. It's declarative and
 idempotent — a no-op run makes no changes. A remote allowlist that fails to
@@ -171,7 +174,7 @@ until the NAS is set up. To enable:
    nix-shell --run 'cd ansible && ansible-vault edit group_vars/all/vault.yml'
    # add:  vault_restic_password: "a-strong-passphrase"
    ```
-3. **Fill in the NAS details** in `group_vars/all/main.yml`: `backup_nas_user`,
+3. **Fill in the NAS details** in `roles/backup/defaults/main.yml`: `backup_nas_user`,
    `backup_nas_path`, and set `backup_enabled: true`.
 4. **Run the playbook.** It installs restic, `restic init`s the repo if needed,
    and enables the weekly timer.
@@ -207,4 +210,4 @@ resolver), Unbound does DNSSEC validation with hardening flags, the upstream is
 DNS-over-TLS, and the admin password is set. Security patches are applied by
 `unattended-upgrades`.
 
-Change the allowed subnet via `hardening_lan_subnet` in `group_vars/all/main.yml`.
+Change the allowed subnet via `hardening_lan_subnet` in `roles/hardening/defaults/main.yml`.

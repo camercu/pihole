@@ -1,7 +1,9 @@
 ---
 # ─────────────────────────────────────────────────────────────────────────────
-# Single source of truth for the Pi-hole box. Every role reads from here so the
-# whole deployment is described in one place and reproducible from a bare SD.
+# Site facts + cross-role interface. Role-internal tunables live in each role's
+# defaults/main.yml; this file holds what the *site* is (identity, network,
+# secrets interface) and any var used by more than one role.
+# (Per-user overrides: the gitignored local.yml / vault.yml alongside.)
 # ─────────────────────────────────────────────────────────────────────────────
 
 # --- host identity ---------------------------------------------------------
@@ -9,16 +11,12 @@ pihole_hostname: pihole
 system_timezone: America/New_York
 system_locale: en_US.UTF-8
 
-# SSH public keys authorised for the ansible_user. Per-user, so the real value
-# lives in the gitignored group_vars/all/local.yml (written by ./setup.sh).
+# SSH public keys authorised for the ansible_user — installed by `common`, read
+# by `hardening` to decide whether to enforce key-only SSH. Per-user, so the
+# real value lives in the gitignored local.yml (written by ./setup.sh).
 authorized_ssh_keys: []
 
-# Base packages installed on every host by the `common` role.
-common_packages:
-  - neovim
-
-# --- LAN hosts (drives /etc/hosts and unbound local A records) --------------
-# name: first token is the canonical hostname; the rest are aliases.
+# LAN hosts written to /etc/hosts. First name token is canonical; rest aliases.
 lan_hosts:
   - ip: 192.168.0.1
     names: [router, router.home.arpa]
@@ -27,71 +25,12 @@ lan_hosts:
   - ip: 192.168.0.11
     names: [jcu-nas2, jcu-nas2.home.arpa]
 
-# --- unbound ----------------------------------------------------------------
-# Kept as an encrypted DoT *forwarder* (not recursive-to-root) so upstream
-# families-filtering is preserved. See roles/unbound/templates/pihole.conf.j2.
+# --- cross-role interface --------------------------------------------------
+# Local unbound endpoint — served by `unbound`, forwarded to by `pihole`.
 unbound_listen_address: 127.0.0.1
 unbound_listen_port: 5335 # Pi-hole's documented default unbound port
-unbound_private_addresses:
-  - 192.168.0.0/16
-  - 169.254.0.0/16
-  - 172.16.0.0/12
-  - 10.0.0.0/8
-  - fd00::/8
-  - fe80::/10
 
-# Upstream DoT resolvers (addr@port). Order = preference.
-unbound_forward_addrs:
-  - { addr: "1.1.1.3@853", comment: "cloudflare families DoT primary" }
-  - { addr: "1.0.0.3@853", comment: "cloudflare families DoT secondary" }
-  - { addr: "9.9.9.9@853", comment: "quad9 DoT primary" }
-  - { addr: "149.112.112.112@853", comment: "quad9 DoT secondary" }
-  - { addr: "8.8.8.8@853", comment: "google DoT primary" }
-  - { addr: "8.8.4.4@853", comment: "google DoT secondary" }
-
-# Local A records served by unbound (in addition to lan_hosts split-horizon).
-unbound_local_records:
-  - { name: "pi.hole", ip: "192.168.0.2" }
-  - { name: "router.home.arpa", ip: "192.168.0.1" }
-
-# Enable SafeSearch enforcement (generated into unbound by safesearch role task).
-unbound_safesearch_enabled: true
-
-# --- pi-hole ----------------------------------------------------------------
-# Network interface Pi-hole binds to (used only at first unattended install).
-pihole_interface: eth0
-
-# Web admin / API password. The real value lives encrypted in
-# group_vars/all/vault.yml as vault_pihole_web_password (see README "Secrets").
-# If the vault var is undefined the admin password is left unset.
+# Web admin / API password — set by `pihole`, used by `backup` for the API.
+# The real value is encrypted in vault.yml as vault_pihole_web_password (see
+# README "Secrets"); undefined => the admin password is left unset.
 pihole_web_password: "{{ vault_pihole_web_password | default('') }}"
-
-# Blocklists, allowlists, and remote allowlist subscriptions live in plain,
-# commented text files you can edit directly — see roles/pihole/files/:
-#   adlists.txt         blocklists (gravity) — one URL per line, # comments ok
-#   allow.list          allowed domains (exact + regex), one per line
-#   allowlist-urls.txt  remote allowlists to fetch and allow
-# The pihole role reconciles them into Pi-hole via its REST API.
-
-# pi-hole points its single upstream at the local unbound instance.
-pihole_dns_upstream: "{{ unbound_listen_address }}#{{ unbound_listen_port }}"
-
-# --- backups (restic -> jcu-nas2 over SFTP, weekly) -------------------------
-# Off until the NAS is reachable, you've filled in the SSH details below, given
-# the Pi SSH access to the NAS, and added vault_restic_password to the vault.
-# See README "Backups". Flip to true, then re-run.
-backup_enabled: false
-backup_nas_host: jcu-nas2 # 192.168.0.11
-backup_nas_user: "" # SSH user on the NAS
-backup_nas_path: "" # absolute path to the restic repo on the NAS
-restic_repository: "sftp:{{ backup_nas_user }}@{{ backup_nas_host }}:{{ backup_nas_path }}"
-restic_password: "{{ vault_restic_password | default('') }}"
-restic_keep_weekly: 8
-backup_oncalendar: "Sun *-*-* 04:30:00" # weekly, Sunday 04:30
-
-# --- hardening --------------------------------------------------------------
-# LAN subnet allowed through the host firewall to SSH/DNS/HTTPS/mDNS.
-hardening_lan_subnet: 192.168.0.0/24
-# Pi-hole webserver bind: plain HTTP on loopback only (for the local API the
-# reconciler uses), HTTPS on all interfaces (LAN admin is forced to TLS).
-hardening_webserver_port: "127.0.0.1:80o,443os,[::]:443os"
