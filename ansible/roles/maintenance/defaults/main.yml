@@ -1,0 +1,26 @@
+---
+# Recurring upkeep jobs, each rendered into a systemd service + timer.
+# oncalendar: systemd OnCalendar expression.
+# persistent: run a missed job on next boot (default true; false for reboot,
+#             which must not fire immediately after a boot it missed).
+maintenance_jobs:
+  - name: pihole-gravity
+    description: Refresh Pi-hole gravity (blocklists)
+    oncalendar: "*-*-* 03:00:00"
+    command: /usr/local/bin/pihole -g
+
+  - name: unbound-root-hints
+    description: Refresh unbound root hints
+    oncalendar: "*-*-* 03:15:00"
+    command: /usr/bin/wget https://www.internic.net/domain/named.root -qO /var/lib/unbound/root.hints
+
+  - name: pihole-update
+    description: Pi-hole self-update
+    oncalendar: "*-*-* 07:00:00"
+    command: /usr/local/bin/pihole -up
+
+  - name: weekly-reboot
+    description: Weekly reboot
+    oncalendar: "Fri *-*-* 03:45:00"
+    command: /usr/bin/systemctl reboot
+    persistent: false

@@ -1,0 +1,10 @@
+{# Managed by Ansible (roles/maintenance). #}
+[Unit]
+Description={{ item.description }} (timer)
+
+[Timer]
+OnCalendar={{ item.oncalendar }}
+Persistent={{ (item.persistent | default(true)) | ternary('true', 'false') }}
+
+[Install]
+WantedBy=timers.target
