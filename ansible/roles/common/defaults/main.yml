@@ -2,3 +2,11 @@
 # Base packages installed on every host.
 common_packages:
   - neovim
+
+# SSH public keys authorised for the ansible_user. Per-site, so the real value
+# lives in the gitignored local.yml (written by ./setup.sh) which overrides this
+# default. Kept here — the lowest precedence tier — rather than group_vars/main.yml
+# so local.yml actually wins (files in group_vars/all load alphabetically, so
+# main.yml would otherwise override local.yml). Installed by `common`; read by
+# `hardening` to decide whether to enforce key-only SSH.
+authorized_ssh_keys: []
