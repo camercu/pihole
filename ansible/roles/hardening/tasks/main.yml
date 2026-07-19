@@ -42,8 +42,8 @@
 
 # --- 4. sshd: no root login (use the unprivileged user + sudo) ----------------
 - name: Harden sshd via drop-in
-  ansible.builtin.copy:
-    src: 99-hardening.conf
+  ansible.builtin.template:
+    src: 99-hardening.conf.j2
     dest: /etc/ssh/sshd_config.d/99-hardening.conf
     owner: root
     group: root
