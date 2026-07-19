@@ -30,13 +30,13 @@ def login():
         data=json.dumps({"password": PW}).encode(),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(req) as r:
+    with urllib.request.urlopen(req, timeout=30) as r:
         return json.load(r)["session"]["sid"]
 
 
 def export_teleporter(sid, dest):
     url = API + "/teleporter" + (f"?sid={sid}" if sid else "")
-    with urllib.request.urlopen(url) as r, open(dest, "wb") as f:
+    with urllib.request.urlopen(url, timeout=30) as r, open(dest, "wb") as f:
         f.write(r.read())
 
 

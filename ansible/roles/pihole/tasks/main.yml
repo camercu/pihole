@@ -43,17 +43,21 @@
   when: not pihole_bin.stat.exists
   changed_when: true
 
-# NOTE (verify on first real apply): Pi-hole v6 stores upstreams in pihole.toml,
-# not setupVars. This enforces unbound as the sole upstream on existing installs.
-# Confirm the FTL config key/CLI on your box; adjust if the command differs.
+# Pi-hole v6 stores upstreams in pihole.toml. Read first, then set only when it
+# differs, so change reporting is honest and a genuine failure isn't swallowed.
+- name: Read current Pi-hole upstream
+  ansible.builtin.command:
+    cmd: pihole-FTL --config dns.upstreams
+  register: pihole_ftl_upstream
+  changed_when: false
+
 - name: Point Pi-hole upstream at local unbound (v6)
   ansible.builtin.command:
     cmd: >-
       pihole-FTL --config dns.upstreams
       '["{{ pihole_dns_upstream }}"]'
-  register: pihole_ftl_upstream
-  changed_when: '"127.0.0.1" not in pihole_ftl_upstream.stdout | default("")'
-  failed_when: false
+  when: pihole_dns_upstream not in pihole_ftl_upstream.stdout
+  changed_when: true
 
 - name: Set Pi-hole web admin password
   ansible.builtin.command:
