@@ -11,11 +11,6 @@ pihole_hostname: pihole
 system_timezone: America/New_York
 system_locale: en_US.UTF-8
 
-# SSH public keys authorised for the ansible_user — installed by `common`, read
-# by `hardening` to decide whether to enforce key-only SSH. Per-user, so the
-# real value lives in the gitignored local.yml (written by ./setup.sh).
-authorized_ssh_keys: []
-
 # LAN hosts written to /etc/hosts. First name token is canonical; rest aliases.
 lan_hosts:
   - ip: 192.168.0.1
