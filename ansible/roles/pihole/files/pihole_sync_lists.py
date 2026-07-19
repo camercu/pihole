@@ -16,6 +16,10 @@ Environment:
   PIHOLE_DIR       config dir (default /etc/pihole/managed)
 
 Prints 'CHANGED' when it modifies anything (for Ansible's changed_when).
+
+Structure: the pure functions below (clean_lines, is_regex, split_allow,
+host_domain, plan) hold the decision logic and are unit-tested; everything that
+touches the network or filesystem is the thin shell beneath them.
 """
 import json
 import os
@@ -24,13 +28,78 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import NamedTuple
 
+MANAGED = "managed by ansible"
+# A line is a regex pattern (not a plain domain) if it contains any of these.
+_REGEX_CHARS = re.compile(r"[\[\](){}|^$\\*+?]")
+
+
+# ── pure core (unit-tested) ─────────────────────────────────────────────────
+def clean_lines(text):
+    """Lines with '#' comments and surrounding whitespace stripped, blanks dropped."""
+    out = []
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line:
+            out.append(line)
+    return out
+
+
+def is_regex(entry):
+    """True if entry is a regex pattern rather than a plain domain."""
+    return bool(_REGEX_CHARS.search(entry))
+
+
+def split_allow(entries):
+    """Partition allow entries into (exact_domains, regex_patterns)."""
+    exact = [e for e in entries if not is_regex(e)]
+    regex = [e for e in entries if is_regex(e)]
+    return exact, regex
+
+
+def host_domain(line):
+    """Domain from a plain or hosts-format line ('0.0.0.0 example.com' -> example.com)."""
+    return line.split()[-1]
+
+
+def plan(desired, current):
+    """Pure diff: (to_add, to_remove).
+
+    to_add   = desired entries not already present (order preserved, de-duped).
+    to_remove = managed-and-present entries no longer desired (sorted).
+    """
+    desired_seen = dict.fromkeys(desired)  # de-dupe, keep order
+    current = set(current)
+    add = [d for d in desired_seen if d not in current]
+    remove = sorted(c for c in current if c not in desired_seen)
+    return add, remove
+
+
+# ── list kinds (data describing each reconcilable list) ─────────────────────
+class Kind(NamedTuple):
+    label: str  # human label, e.g. "adlist", "allow/exact"
+    path: str  # GET current + POST add
+    del_path: str  # POST batch-delete
+    collection: str  # top-level key in the GET response
+    field: str  # entry field / add-body field
+    del_extra: dict  # extra fields on each batch-delete item
+    bucket: str  # which change bucket to flag ("adlists"/"domains")
+
+
+ADLIST = Kind("adlist", "/lists?type=block", "/lists:batchDelete",
+              "lists", "address", {"type": "block"}, "adlists")
+
+
+def allow_kind(kind):  # kind: "exact" | "regex"
+    return Kind(f"allow/{kind}", f"/domains/allow/{kind}", "/domains:batchDelete",
+                "domains", "domain", {"type": "allow", "kind": kind}, "domains")
+
+
+# ── I/O shell ───────────────────────────────────────────────────────────────
 API = os.environ.get("PIHOLE_API", "http://localhost/api")
 PW = os.environ.get("PIHOLE_PASSWORD", "")
 DIR = os.environ.get("PIHOLE_DIR", "/etc/pihole/managed")
-MANAGED = "managed by ansible"
-# A line is a regex pattern (not a plain domain) if it contains any of these.
-REGEX_CHARS = re.compile(r"[\[\](){}|^$\\*+?]")
 
 changed = {"adlists": False, "domains": False}
 # Set False if any remote allowlist fails to download. When a source is
@@ -40,7 +109,7 @@ fetch_ok = True
 
 
 def api(method, path, sid=None, body=None):
-    """Call the FTL API. Returns (status_code, decoded_json_or_{})."""
+    """Call the FTL API. Returns (status_code, decoded_json_or_text)."""
     url = API + path
     if sid:
         url += ("&" if "?" in url else "?") + "sid=" + urllib.parse.quote(sid)
@@ -82,16 +151,6 @@ def login():
     return j["session"]["sid"]
 
 
-def clean_lines(text):
-    """Strip '#' comments and surrounding whitespace; drop blank lines."""
-    out = []
-    for line in text.splitlines():
-        line = line.split("#", 1)[0].strip()
-        if line:
-            out.append(line)
-    return out
-
-
 def read_file(name):
     path = os.path.join(DIR, name)
     if not os.path.exists(path):
@@ -110,75 +169,52 @@ def fetch_domains(url):
         print(f"WARN: could not fetch {url}: {e}", file=sys.stderr)
         fetch_ok = False
         return []
-    return [line.split()[-1] for line in clean_lines(text)]
+    return [host_domain(line) for line in clean_lines(text)]
 
 
-def reconcile_adlists(sid, desired):
-    st, j = api("GET", "/lists?type=block", sid)
+def reconcile(sid, kind, desired, allow_remove=True):
+    """Make the MANAGED entries of one list kind match `desired`."""
+    st, j = api("GET", kind.path, sid)
     if st != 200:
-        die(f"GET lists failed (HTTP {st}): {j}")
-    current = {x["address"] for x in j.get("lists", []) if x.get("comment") == MANAGED}
-    add = [a for a in desired if a not in current]
-    remove = [a for a in current if a not in desired]
-    if add:
-        st, j = api("POST", "/lists?type=block", sid,
-                    {"address": add, "comment": MANAGED, "enabled": True})
-        if st not in (200, 201):
-            die(f"adding adlists failed (HTTP {st}): {j}")
-        changed["adlists"] = True
-        print(f"  + {len(add)} adlist(s)")
-    if remove:
-        st, j = api("POST", "/lists:batchDelete", sid,
-                    [{"item": a, "type": "block"} for a in remove])
-        if st not in (200, 204):
-            die(f"removing adlists failed (HTTP {st}): {j}")
-        changed["adlists"] = True
-        print(f"  - {len(remove)} adlist(s)")
+        die(f"GET {kind.label} failed (HTTP {st}): {j}")
+    current = {x[kind.field] for x in j.get(kind.collection, [])
+               if x.get("comment") == MANAGED}
+    add, remove = plan(desired, current)
 
-
-def reconcile_allow(sid, kind, desired, allow_remove=True):
-    st, j = api("GET", f"/domains/allow/{kind}", sid)
-    if st != 200:
-        die(f"GET domains failed (HTTP {st}): {j}")
-    current = {x["domain"] for x in j.get("domains", []) if x.get("comment") == MANAGED}
-    desired = set(desired)
-    add = sorted(desired - current)
-    remove = sorted(current - desired)
     if add:
-        st, j = api("POST", f"/domains/allow/{kind}", sid,
-                    {"domain": add, "comment": MANAGED, "enabled": True})
+        st, j = api("POST", kind.path, sid,
+                    {kind.field: add, "comment": MANAGED, "enabled": True})
         if st not in (200, 201):
-            die(f"adding allow/{kind} failed (HTTP {st}): {j}")
-        changed["domains"] = True
-        print(f"  + {len(add)} allow/{kind}")
+            die(f"adding {kind.label} failed (HTTP {st}): {j}")
+        changed[kind.bucket] = True
+        print(f"  + {len(add)} {kind.label}")
+
     if remove and not allow_remove:
-        print(f"  ~ skipping removal of {len(remove)} allow/{kind} "
+        print(f"  ~ skipping removal of {len(remove)} {kind.label} "
               "(a source failed to load; not removing to avoid data loss)",
               file=sys.stderr)
     elif remove:
-        st, j = api("POST", "/domains:batchDelete", sid,
-                    [{"item": d, "type": "allow", "kind": kind} for d in remove])
+        st, j = api("POST", kind.del_path, sid,
+                    [{"item": r, **kind.del_extra} for r in remove])
         if st not in (200, 204):
-            die(f"removing allow/{kind} failed (HTTP {st}): {j}")
-        changed["domains"] = True
-        print(f"  - {len(remove)} allow/{kind}")
+            die(f"removing {kind.label} failed (HTTP {st}): {j}")
+        changed[kind.bucket] = True
+        print(f"  - {len(remove)} {kind.label}")
 
 
 def main():
     sid = login()
 
-    local_allow = read_file("allow.list")
-    allow_exact = [d for d in local_allow if not REGEX_CHARS.search(d)]
-    allow_regex = [d for d in local_allow if REGEX_CHARS.search(d)]
+    allow_exact, allow_regex = split_allow(read_file("allow.list"))
     for url in read_file("allowlist-urls.txt"):
         allow_exact += fetch_domains(url)
 
     # allow_exact draws on remote lists; only remove exact entries if every
     # source loaded (fetch_ok). Adlists and regex don't fetch, so removal is
     # always safe there.
-    reconcile_adlists(sid, read_file("adlists.txt"))
-    reconcile_allow(sid, "exact", allow_exact, allow_remove=fetch_ok)
-    reconcile_allow(sid, "regex", allow_regex)
+    reconcile(sid, ADLIST, read_file("adlists.txt"))
+    reconcile(sid, allow_kind("exact"), allow_exact, allow_remove=fetch_ok)
+    reconcile(sid, allow_kind("regex"), allow_regex)
 
     # Apply: gravity re-fetches adlists (needed for adlist changes); a plain
     # DNS restart is enough to pick up domain-list changes.

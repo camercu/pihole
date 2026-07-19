@@ -8,5 +8,6 @@ pkgs.mkShell {
     ansible # ansible-core + community collections (control node)
     ansible-lint # static analysis for playbooks/roles
     sshpass # only needed for first-boot password SSH before keys are installed
+    (python3.withPackages (ps: [ ps.pytest ])) # unit tests for the helper scripts
   ];
 }

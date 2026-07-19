@@ -29,7 +29,7 @@
 
     - name: Deploy backup script
       ansible.builtin.copy:
-        src: pihole-backup.py
+        src: pihole_backup.py
         dest: /usr/local/bin/pihole-backup.py
         owner: root
         group: root
