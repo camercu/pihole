@@ -1,32 +1,7 @@
 ---
-# Scheduled upkeep, ported from the original crontab.root. Kept as cron (not
-# systemd timers) to stay close to the working setup; the cron module is
-# idempotent and self-documenting via the name/comment.
-
-- name: Nightly gravity (blocklist) refresh
-  ansible.builtin.cron:
-    name: pihole gravity refresh
-    minute: "0"
-    hour: "3"
-    user: root
-    job: /usr/local/bin/pihole -g
-
-- name: Refresh unbound root hints
-  ansible.builtin.cron:
-    name: unbound root hints refresh
-    minute: "15"
-    hour: "3"
-    user: root
-    job: /usr/bin/wget https://www.internic.net/domain/named.root -qO /var/lib/unbound/root.hints
-
-# OS security patches are handled by unattended-upgrades (below), NOT a cron
-# full-upgrade — security-only is safer than pulling every package unattended,
-# and unattended-upgrades self-locks so it won't collide with other apt jobs.
-- name: Remove the old cron full-upgrade (superseded by unattended-upgrades)
-  ansible.builtin.cron:
-    name: apt full-upgrade
-    user: root
-    state: absent
+# OS security patches via unattended-upgrades; recurring upkeep via systemd
+# timers (Persistent=true catches up jobs missed while the Pi was powered off,
+# which cron cannot do). Replaces the original crontab.root entirely.
 
 - name: Install unattended-upgrades
   ansible.builtin.apt:
@@ -41,19 +16,46 @@
     group: root
     mode: "0644"
 
-- name: Daily Pi-hole self-update
+- name: Remove superseded root cron jobs
   ansible.builtin.cron:
-    name: pihole self update
-    minute: "0"
-    hour: "7"
+    name: "{{ item }}"
     user: root
-    job: /usr/local/bin/pihole -up
+    state: absent
+  loop:
+    - pihole gravity refresh
+    - unbound root hints refresh
+    - pihole self update
+    - weekly reboot
+    - apt full-upgrade
 
-- name: Weekly reboot (Friday)
-  ansible.builtin.cron:
-    name: weekly reboot
-    minute: "45"
-    hour: "3"
-    weekday: FRI
-    user: root
-    job: /sbin/reboot
+- name: Deploy maintenance service units
+  ansible.builtin.template:
+    src: maintenance.service.j2
+    dest: "/etc/systemd/system/maint-{{ item.name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ maintenance_jobs }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Deploy maintenance timer units
+  ansible.builtin.template:
+    src: maintenance.timer.j2
+    dest: "/etc/systemd/system/maint-{{ item.name }}.timer"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ maintenance_jobs }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Enable and start maintenance timers
+  ansible.builtin.systemd_service:
+    name: "maint-{{ item.name }}.timer"
+    enabled: true
+    state: started
+    daemon_reload: true
+  loop: "{{ maintenance_jobs }}"
+  loop_control:
+    label: "{{ item.name }}"
