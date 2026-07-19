@@ -27,7 +27,7 @@ upstream family-filtering and giving a local encrypted cache. SafeSearch is
 enforced locally via CNAME redirects.
 
 ```
-client → Pi-hole (:53, blocklists) → Unbound (:5553, DoT cache) → upstream resolvers
+client → Pi-hole (:53, blocklists) → Unbound (:5335, DoT cache) → upstream resolvers
 ```
 
 ## Layout
@@ -37,14 +37,18 @@ shell.nix / .envrc          # nix dev env: ansible + ansible-lint (+ sshpass)
 ansible/
   ansible.cfg
   inventory.yml             # the Pi: host, ssh user
-  site.yml                  # runs the four roles in order
-  group_vars/all.yml        # single source of truth: hosts, upstreams, lists
+  site.yml                  # runs the six roles in order
+  group_vars/all/
+    main.yml                # shared settings: hosts, upstreams, ports, backups
+    vault.yml               # gitignored: encrypted admin/API + restic passwords
+    local.yml               # gitignored: connection (host, user, ssh keys)
   roles/
     common/                 # hostname, locale, timezone, packages, /etc/hosts, ssh keys
     unbound/                # install + config templates, root hints, SafeSearch
     pihole/                 # unattended install, upstream→unbound, adlists/allowlists
-    maintenance/            # cron: gravity/root-hints/apt/self-update refresh, reboot
+    maintenance/            # gravity/root-hints/pihole refresh, reboot, unattended-upgrades
     backup/                 # weekly Teleporter export -> restic on the NAS (opt-in)
+    hardening/              # firewall, drop unused services, force HTTPS admin, no root SSH
 ```
 
 ## Quick start (one command)
@@ -194,10 +198,13 @@ zero/low usability cost:
 - **Forces HTTPS** for the admin UI — plain HTTP is bound to loopback only (so
   the local reconciler API still works); LAN admin must use `https://`.
 - **`PermitRootLogin no`** — log in as the normal user and `sudo`.
+- **Key-only SSH** (`PasswordAuthentication no`) — enforced *once an SSH key is
+  provisioned* (`authorized_ssh_keys` non-empty). Left enabled otherwise so a
+  password-bootstrap user isn't locked out; add your key, re-run, and it flips.
 
 Already in place by design: Pi-hole answers only the local subnet (not an open
-resolver), SSH is key-only (`PasswordAuthentication no`), Unbound does DNSSEC
-validation with hardening flags, the upstream is DNS-over-TLS, and the admin
-password is set. Security patches are applied by `unattended-upgrades`.
+resolver), Unbound does DNSSEC validation with hardening flags, the upstream is
+DNS-over-TLS, and the admin password is set. Security patches are applied by
+`unattended-upgrades`.
 
 Change the allowed subnet via `hardening_lan_subnet` in `group_vars/all/main.yml`.
