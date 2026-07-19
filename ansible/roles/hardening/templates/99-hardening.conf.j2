@@ -1,0 +1,8 @@
+# Managed by Ansible (roles/hardening).
+PermitRootLogin no
+{% if authorized_ssh_keys | length > 0 %}
+# An SSH key is provisioned for this host, so enforce key-only auth.
+# (Left enabled when no key is set, so a password-bootstrap user isn't locked out.)
+PubkeyAuthentication yes
+PasswordAuthentication no
+{% endif %}
