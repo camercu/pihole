@@ -1,24 +1,11 @@
 ---
 # ─────────────────────────────────────────────────────────────────────────────
-# Site facts + cross-role interface. Role-internal tunables live in each role's
-# defaults/main.yml; this file holds what the *site* is (identity, network,
-# secrets interface) and any var used by more than one role.
-# (Per-user overrides: the gitignored local.yml / vault.yml alongside.)
+# Cross-role interface — values used by more than one role. Role-internal
+# tunables live in each role's defaults/main.yml; per-site facts (identity,
+# LAN hosts, subnet, NAS, timezone) live in the owning role's defaults with
+# generic values and are overridden in the gitignored local.yml — kept out of
+# this file because group_vars load order would let main.yml override local.yml.
 # ─────────────────────────────────────────────────────────────────────────────
-
-# --- host identity ---------------------------------------------------------
-pihole_hostname: pihole
-system_timezone: America/New_York
-system_locale: en_US.UTF-8
-
-# LAN hosts written to /etc/hosts. First name token is canonical; rest aliases.
-lan_hosts:
-  - ip: 192.168.0.1
-    names: [router, router.home.arpa]
-  - ip: 192.168.0.2
-    names: [pihole, pi.hole, pihole.home.arpa]
-  - ip: 192.168.0.11
-    names: [jcu-nas2, jcu-nas2.home.arpa]
 
 # --- cross-role interface --------------------------------------------------
 # Local unbound endpoint — served by `unbound`, forwarded to by `pihole`.
