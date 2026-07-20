@@ -17,3 +17,6 @@ ansible/group_vars/all/local.yml
 
 # Claude
 .claude/
+
+# harden loop working state (never committed)
+.harden/
