@@ -1,10 +1,11 @@
 ---
 # ─────────────────────────────────────────────────────────────────────────────
-# Cross-role interface — values used by more than one role. Role-internal
-# tunables live in each role's defaults/main.yml; per-site facts (identity,
-# LAN hosts, subnet, NAS, timezone) live in the owning role's defaults with
-# generic values and are overridden in the gitignored local.yml — kept out of
-# this file because group_vars load order would let main.yml override local.yml.
+# Cross-role interface — values used by more than one role and NOT meant to be
+# overridden per-site. Role-internal tunables live in each role's
+# defaults/main.yml; generic per-site facts (identity, LAN hosts, timezone) live
+# in defaults.yml alongside, overridden by the gitignored local.yml. They are
+# kept out of *this* file on purpose: group_vars/all load alphabetically, so
+# main.yml would override local.yml (defaults.yml, sorting first, does not).
 # ─────────────────────────────────────────────────────────────────────────────
 
 # --- cross-role interface --------------------------------------------------
