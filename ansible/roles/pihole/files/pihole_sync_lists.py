@@ -33,6 +33,9 @@ from typing import NamedTuple
 MANAGED = "managed by ansible"
 # A line is a regex pattern (not a plain domain) if it contains any of these.
 _REGEX_CHARS = re.compile(r"[\[\](){}|^$\\*+?]")
+# FTL rejects a duplicate add with this message; we treat it as a soft collision
+# (something already added the entry by hand) rather than a fatal error.
+_ALREADY_PRESENT = "already present"
 
 
 # ── pure core (unit-tested) ─────────────────────────────────────────────────
@@ -49,6 +52,17 @@ def clean_lines(text):
 def is_regex(entry):
     """True if entry is a regex pattern rather than a plain domain."""
     return bool(_REGEX_CHARS.search(entry))
+
+
+def is_collision(status, body):
+    """True if an add failed because the entry already exists (hand-added).
+
+    FTL answers a duplicate add with HTTP 400 and a message containing
+    "already present"; anything else at 400 (e.g. a bad regex) is a real error.
+    """
+    if status not in (400, 409):
+        return False
+    return _ALREADY_PRESENT in json.dumps(body).lower()
 
 
 def split_allow(entries):
@@ -173,6 +187,10 @@ changed = {"adlists": False, "domains": False, "groups": False, "clients": False
 # incomplete we must NOT treat its domains as "removed" — a transient network
 # blip would otherwise delete legitimately-managed allow entries.
 fetch_ok = True
+# Entries we couldn't add because something already added them by hand. We skip
+# them (rest of the run still converges) and exit non-zero at the end so the
+# collision is visible instead of silently unmanaged.
+collisions = []
 
 
 def api(method, path, sid=None, body=None):
@@ -243,6 +261,36 @@ def fetch_domains(url):
     return [host_domain(line) for line in clean_lines(text)]
 
 
+def add_entries(sid, kind, items, extra):
+    """POST items (as one batch), isolating hand-added collisions per item.
+
+    FTL fails the whole batch if any single item already exists, so on a collision
+    we retry each item alone: non-colliding ones still apply; colliders are recorded
+    (see `collisions`) and skipped so the rest of the run still converges. A
+    non-collision error is still fatal. Returns the number actually added.
+    """
+    if not items:
+        return 0
+    st, j = api("POST", kind.path, sid, {kind.field: items, **extra})
+    if st in (200, 201):
+        return len(items)
+    if not is_collision(st, j):
+        die(f"adding {kind.label} failed (HTTP {st}): {j}")
+    added = 0
+    for it in items:
+        st, j = api("POST", kind.path, sid, {kind.field: [it], **extra})
+        if st in (200, 201):
+            added += 1
+        elif is_collision(st, j):
+            collisions.append((kind.label, it))
+            print(f"WARN: {kind.label} {it!r} already exists as a hand-added entry; "
+                  "remove it (Pi-hole UI or config) so it can be managed.",
+                  file=sys.stderr)
+        else:
+            die(f"adding {kind.label} {it!r} failed (HTTP {st}): {j}")
+    return added
+
+
 def reconcile(sid, kind, desired, allow_remove=True):
     """Make the MANAGED entries of one list kind match `desired`."""
     st, j = api("GET", kind.path, sid)
@@ -252,13 +300,10 @@ def reconcile(sid, kind, desired, allow_remove=True):
                if x.get("comment") == MANAGED}
     add, remove = plan(desired, current)
 
-    if add:
-        st, j = api("POST", kind.path, sid,
-                    {kind.field: add, "comment": MANAGED, "enabled": True})
-        if st not in (200, 201):
-            die(f"adding {kind.label} failed (HTTP {st}): {j}")
+    added = add_entries(sid, kind, add, {"comment": MANAGED, "enabled": True})
+    if added:
         changed[kind.bucket] = True
-        print(f"  + {len(add)} {kind.label}")
+        print(f"  + {added} {kind.label}")
 
     if remove and not allow_remove:
         print(f"  ~ skipping removal of {len(remove)} {kind.label} "
@@ -289,13 +334,11 @@ def reconcile_membership(sid, kind, desired):
 
     enabled = {"enabled": True} if kind.enabled else {}
     for group_set, items in _bucket_by_groups(add):
-        st, j = api("POST", kind.path, sid,
-                    {kind.field: items, "comment": MANAGED,
-                     "groups": group_set, **enabled})
-        if st not in (200, 201):
-            die(f"adding {kind.label} failed (HTTP {st}): {j}")
-        changed[kind.bucket] = True
-        print(f"  + {len(items)} {kind.label} -> groups {group_set}")
+        body = {"comment": MANAGED, "groups": group_set, **enabled}
+        added = add_entries(sid, kind, items, body)
+        if added:
+            changed[kind.bucket] = True
+            print(f"  + {added} {kind.label} -> groups {group_set}")
 
     for entry, groups in update.items():
         st, j = api("PUT", kind.item_path(entry), sid,
@@ -414,6 +457,14 @@ def main():
         api("POST", "/action/restartdns", sid)
 
     print("CHANGED" if any(changed.values()) else "no changes")
+
+    # Everything appliable has been applied; fail loudly so a hand-added collision
+    # isn't left silently unmanaged.
+    if collisions:
+        print(f"ERROR: {len(collisions)} entr{'y' if len(collisions) == 1 else 'ies'} "
+              "skipped due to hand-added collisions (see warnings above)",
+              file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

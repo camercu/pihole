@@ -103,6 +103,23 @@ class TestPlanMembership:
         assert update == {} and remove == []
 
 
+class TestIsCollision:
+    def test_ftl_already_present_400_is_collision(self):
+        body = {"error": {"key": "database_error",
+                          "message": "The item is already present"}}
+        assert s.is_collision(400, body)
+
+    def test_other_400_is_not_collision(self):
+        assert not s.is_collision(400, {"error": {"message": "bad regex"}})
+
+    def test_success_is_not_collision(self):
+        assert not s.is_collision(201, {})
+
+    def test_text_body_tolerated(self):
+        assert s.is_collision(409, "duplicate: item already present")
+        assert not s.is_collision(500, "internal error")
+
+
 class TestBuildMembership:
     def test_unions_group_ids_per_entry(self):
         got = s.build_membership([(1, ["a", "b"]), (2, ["b", "c"])])
