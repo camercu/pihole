@@ -1,8 +1,10 @@
 ---
-# Per-user connection config. ./setup.sh writes the real (gitignored) local.yml
-# from prompts on first run; this file just documents the shape.
+# Per-site config, gitignored. ./setup.sh writes the real local.yml from prompts
+# on first run (the connection block below); the site-facts block is optional and
+# added by hand. Everything here overrides the generic defaults in the roles, so
+# you never edit tracked files to describe your own network.
 
-# How Ansible reaches the Pi.
+# ── Connection: how Ansible reaches the Pi ─────────────────────────────────
 ansible_host: pihole.local # mDNS name, IP, or raspberrypi.local on a fresh Pi
 ansible_user: pi # the Linux user you set when flashing the SD card
 
@@ -11,5 +13,27 @@ ansible_user: pi # the Linux user you set when flashing the SD card
 # ...or omit it and let ./setup.sh use password auth (-k).
 
 # Public keys to install for ansible_user (so future logins are key-based).
+# Once non-empty, the hardening role flips SSH to key-only.
 authorized_ssh_keys: []
 #  - "ssh-ed25519 AAAA... you@laptop"
+
+# ── Site facts (optional; override role defaults) ──────────────────────────
+# Sensible generic defaults ship in the roles, so all of this is optional.
+# Set what differs for your network.
+
+# system_timezone: America/New_York   # default Etc/UTC
+# system_locale: en_US.UTF-8
+
+# LAN hosts -> /etc/hosts + unbound split-horizon A records. First name token is
+# canonical; the rest are aliases. Default is empty (localhost only).
+# lan_hosts:
+#   - ip: 192.168.1.1
+#     names: [router, router.home.arpa]
+#   - ip: 192.168.1.2
+#     names: [pihole, pi.hole, pihole.home.arpa]
+
+# Subnet allowed through the host firewall (SSH/DNS/HTTPS/mDNS).
+# hardening_lan_subnet: 192.168.1.0/24
+
+# NAS hosting the restic backup repo (see README "Backups").
+# backup_nas_host: nas.home.arpa

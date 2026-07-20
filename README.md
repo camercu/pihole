@@ -39,9 +39,10 @@ ansible/
   inventory.yml             # the Pi: host, ssh user
   site.yml                  # runs the six roles in order
   group_vars/all/
-    main.yml                # shared settings: hosts, upstreams, ports, backups
+    defaults.yml            # generic per-site facts (overridden by local.yml)
+    main.yml                # cross-role interface: unbound endpoint, password
     vault.yml               # gitignored: encrypted admin/API + restic passwords
-    local.yml               # gitignored: connection (host, user, ssh keys)
+    local.yml               # gitignored: connection + per-site facts (see below)
   roles/
     common/                 # hostname, locale, timezone, packages, /etc/hosts, ssh keys
     unbound/                # install + config templates, root hints, SafeSearch
@@ -119,12 +120,21 @@ nix-shell --run 'cd ansible && ansible-lint'
 - `allowlist-urls.txt` — remote allowlists to fetch and allow
 
 Other settings live with the role that owns them (each `roles/<role>/defaults/
-main.yml`), while site facts and cross-role values are in
-`ansible/group_vars/all/main.yml`:
+main.yml`), which ship **generic defaults** so the playbook runs anywhere.
+Cross-role wiring (the unbound endpoint, the password interface) is in
+`group_vars/all/main.yml`:
 
 - **Upstream resolvers** — `unbound_forward_addrs` (`roles/unbound/defaults/`)
-- **Local DNS records** — `unbound_local_records` (`roles/unbound/defaults/`)
-- **LAN hosts / `/etc/hosts`** — `lan_hosts` (`group_vars/all/main.yml`)
+
+**Per-site facts** — anything describing *your* network — belong in the
+gitignored `group_vars/all/local.yml`, which overrides the role defaults so you
+never edit tracked files (see `local.yml.example` for the full shape):
+
+- **LAN hosts / `/etc/hosts`** — `lan_hosts` (also served as unbound
+  split-horizon A records)
+- **Firewall subnet** — `hardening_lan_subnet`
+- **Timezone / locale** — `system_timezone`, `system_locale`
+- **Backup NAS** — `backup_nas_host`
 
 Edit, re-run the playbook (or `./setup.sh`), done. The pihole role reconciles
 lists into Pi-hole through its **REST API** (`pihole_sync_lists.py`): it adds
@@ -147,12 +157,17 @@ the repo has their own.
 exists, so Ansible commands just work. Without direnv, add `--ask-vault-pass`.
 
 ```bash
-# Change the stored password:
+# Change the stored password, then re-run so `pihole setpassword` applies it:
 nix-shell --run 'cd ansible && ansible-vault edit group_vars/all/vault.yml'
+nix-shell --run 'cd ansible && ansible-playbook site.yml --tags pihole'
 
 # Rotate the passphrase itself:
 nix-shell --run 'cd ansible && ansible-vault rekey group_vars/all/vault.yml'
 ```
+
+The same password is also the API credential baked into the backup env file, so
+if backups are enabled re-run the `backup` tag too (`--tags pihole,backup`) to
+keep the Teleporter export authenticating.
 
 ⚠️ Back up the **passphrase** (password manager) — lose it and the encrypted
 file is unrecoverable.
@@ -161,21 +176,23 @@ file is unrecoverable.
 
 The `backup` role exports a Pi-hole **Teleporter** bundle (all config: adlists,
 allow/deny, DHCP, settings) via the API and stores it weekly in a **restic**
-repository on `jcu-nas2` over SFTP — encrypted, deduplicated, incremental. A
-`pihole-backup.timer` runs it Sunday 04:30; retention keeps 8 weekly snapshots.
+repository on your NAS (`backup_nas_host`) over SFTP — encrypted, deduplicated,
+incremental. A `pihole-backup.timer` runs it Sunday 04:30; retention keeps 8
+weekly snapshots.
 
 It's **off by default** (`backup_enabled: false`) so the playbook stays green
 until the NAS is set up. To enable:
 
 1. **Give the Pi SSH access to the NAS** — the Pi's root user must be able to
-   `ssh <nas_user>@jcu-nas2` non-interactively (install a key).
+   `ssh <nas_user>@<backup_nas_host>` non-interactively (install a key).
 2. **Add the restic repo password to the vault:**
    ```bash
    nix-shell --run 'cd ansible && ansible-vault edit group_vars/all/vault.yml'
    # add:  vault_restic_password: "a-strong-passphrase"
    ```
-3. **Fill in the NAS details** in `roles/backup/defaults/main.yml`: `backup_nas_user`,
-   `backup_nas_path`, and set `backup_enabled: true`.
+3. **Fill in the NAS details** in `group_vars/all/local.yml`: `backup_nas_host`,
+   `backup_nas_user`, `backup_nas_path`. Then set `backup_enabled: true` in
+   `roles/backup/defaults/main.yml` (that toggle isn't per-site).
 4. **Run the playbook.** It installs restic, `restic init`s the repo if needed,
    and enables the weekly timer.
 
