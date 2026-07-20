@@ -1,0 +1,27 @@
+---
+# ─────────────────────────────────────────────────────────────────────────────
+# Generic per-site defaults. They describe a *default* network so the playbook
+# runs anywhere out of the box; the gitignored local.yml overrides them with
+# your real values (see local.yml.example).
+#
+# Why its own file, not main.yml? Files in group_vars/all load alphabetically
+# and later ones win — so defaults.yml (d) is overridden by local.yml (l),
+# which is exactly the precedence we want. main.yml (m) sorts *after* local.yml,
+# so it holds only the cross-role interface that is NOT meant to be overridden
+# per-site. Do not rename this file to sort after local.yml, or overrides break.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Host identity.
+pihole_hostname: pihole
+system_timezone: Etc/UTC
+system_locale: en_US.UTF-8
+
+# SSH public keys authorised for the ansible_user. Installed by `common`; read
+# by `hardening` to decide whether to enforce key-only SSH.
+authorized_ssh_keys: []
+
+# LAN hosts written to /etc/hosts, and served as split-horizon A records by
+# `unbound` (records derived from this list). First name token is canonical;
+# the rest are aliases. Empty default => /etc/hosts gets only the localhost
+# block and unbound serves no local records.
+lan_hosts: []
