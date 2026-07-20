@@ -3,7 +3,7 @@
 # Off until the NAS is reachable, the SSH details below are filled in, the Pi
 # has SSH access to the NAS, and vault_restic_password is set. See README.
 backup_enabled: false
-backup_nas_host: jcu-nas2 # 192.168.0.11
+backup_nas_host: nas.home.arpa # override in local.yml with your NAS host/IP
 backup_nas_user: "" # SSH user on the NAS
 backup_nas_path: "" # absolute path to the restic repo on the NAS
 backup_restic_repository: "sftp:{{ backup_nas_user }}@{{ backup_nas_host }}:{{ backup_nas_path }}"
