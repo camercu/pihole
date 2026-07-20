@@ -120,6 +120,37 @@ class TestIsCollision:
         assert not s.is_collision(500, "internal error")
 
 
+class TestAssembleDesired:
+    def test_scopes_and_unions(self):
+        d = s.assemble_desired(
+            ["global-ad.txt"],
+            [(1, ["kids-ad.txt"], ["bad.com", r"(\.|^)x\.com$"], ["10.0.0.5"])],
+        )
+        assert d["adlists"] == {"global-ad.txt": {0}, "kids-ad.txt": {1}}
+        assert d["deny_exact"] == {"bad.com": {1}}
+        assert d["deny_regex"] == {r"(\.|^)x\.com$": {1}}
+        assert d["clients"] == {"10.0.0.5": {0, 1}}  # device joins group AND default
+
+    def test_same_adlist_in_default_and_group_unions(self):
+        d = s.assemble_desired(["shared.txt"], [(1, ["shared.txt"], [], [])])
+        assert d["adlists"] == {"shared.txt": {0, 1}}
+
+    def test_empty(self):
+        assert s.assemble_desired([], []) == {
+            "adlists": {}, "deny_exact": {}, "deny_regex": {}, "clients": {}}
+
+
+class TestBucketByGroups:
+    def test_groups_shared_group_set_into_one_batch(self):
+        add = {"a": {1}, "b": {1}, "c": {0, 1}}
+        got = s._bucket_by_groups(add)
+        # sorted by group-set key, items sorted within each batch
+        assert got == [([0, 1], ["c"]), ([1], ["a", "b"])]
+
+    def test_empty(self):
+        assert s._bucket_by_groups({}) == []
+
+
 class TestReconcileMembershipGuard:
     def test_rejects_kind_without_item_path(self):
         # allow_kind has no PUT item_path; membership reconcile needs one, so it
