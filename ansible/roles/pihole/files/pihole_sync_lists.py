@@ -92,6 +92,35 @@ def plan(desired, current):
     return add, remove
 
 
+def plan_membership(desired, current):
+    """Diff item -> group-id-set mappings: (add, update, remove).
+
+    A Pi-hole entry (deny domain, adlist, client) exists once but can belong to
+    several groups, so membership is the set of group ids on it.
+      add    = {item: groups} desired but absent — create with these groups.
+      update = {item: groups} present with a different group set — reassign.
+      remove = sorted items present but no longer desired — delete.
+    """
+    add = {i: g for i, g in desired.items() if i not in current}
+    update = {i: g for i, g in desired.items()
+              if i in current and g != current[i]}
+    remove = sorted(i for i in current if i not in desired)
+    return add, update, remove
+
+
+def build_membership(entries_by_group):
+    """[(group_id, [entries])] -> {entry: set(group_ids)}, unioning duplicates.
+
+    The same entry configured under several groups collapses to one entry owned
+    by all of them (Pi-hole stores each domain/adlist once, group-tagged).
+    """
+    membership = {}
+    for gid, entries in entries_by_group:
+        for entry in entries:
+            membership.setdefault(entry, set()).add(gid)
+    return membership
+
+
 # ── list kinds (data describing each reconcilable list) ─────────────────────
 class Kind(NamedTuple):
     label: str  # human label, e.g. "adlist", "allow/exact"
@@ -101,15 +130,27 @@ class Kind(NamedTuple):
     field: str  # entry field / add-body field
     del_extra: dict  # extra fields on each batch-delete item
     bucket: str  # which change bucket to flag ("adlists"/"domains")
+    item_path: object = None  # entry -> single-item URL for PUT (group reassign)
+
+
+def _q(entry):
+    return urllib.parse.quote(entry, safe="")
 
 
 ADLIST = Kind("adlist", "/lists?type=block", "/lists:batchDelete",
-              "lists", "address", {"type": "block"}, "adlists")
+              "lists", "address", {"type": "block"}, "adlists",
+              lambda e: f"/lists/{_q(e)}?type=block")
 
 
 def allow_kind(kind):  # kind: "exact" | "regex"
     return Kind(f"allow/{kind}", f"/domains/allow/{kind}", "/domains:batchDelete",
                 "domains", "domain", {"type": "allow", "kind": kind}, "domains")
+
+
+def deny_kind(kind):  # kind: "exact" | "regex"
+    return Kind(f"deny/{kind}", f"/domains/deny/{kind}", "/domains:batchDelete",
+                "domains", "domain", {"type": "deny", "kind": kind}, "domains",
+                lambda e: f"/domains/deny/{kind}/{_q(e)}")
 
 
 # ── I/O shell ───────────────────────────────────────────────────────────────
@@ -170,12 +211,16 @@ def login():
     return j["session"]["sid"]
 
 
-def read_file(name):
-    path = os.path.join(DIR, name)
+def read_path(path):
+    """Cleaned lines of a config file, or [] if it doesn't exist."""
     if not os.path.exists(path):
         return []
     with open(path, encoding="utf-8") as f:
         return clean_lines(f.read())
+
+
+def read_file(name):
+    return read_path(os.path.join(DIR, name))
 
 
 def fetch_domains(url):
@@ -219,6 +264,57 @@ def reconcile(sid, kind, desired, allow_remove=True):
             die(f"removing {kind.label} failed (HTTP {st}): {j}")
         changed[kind.bucket] = True
         print(f"  - {len(remove)} {kind.label}")
+
+
+def reconcile_membership(sid, kind, desired):
+    """Reconcile a group-scoped list kind: entry -> set of group ids.
+
+    Unlike `reconcile`, entries carry group membership. Managed entries are
+    created (batched by shared group set), reassigned via PUT when their groups
+    drift, and deleted when no longer desired.
+    """
+    st, j = api("GET", kind.path, sid)
+    if st != 200:
+        die(f"GET {kind.label} failed (HTTP {st}): {j}")
+    current = {x[kind.field]: set(x.get("groups", []))
+               for x in j.get(kind.collection, []) if x.get("comment") == MANAGED}
+    add, update, remove = plan_membership(desired, current)
+
+    for group_set, items in _bucket_by_groups(add):
+        st, j = api("POST", kind.path, sid,
+                    {kind.field: items, "comment": MANAGED,
+                     "enabled": True, "groups": group_set})
+        if st not in (200, 201):
+            die(f"adding {kind.label} failed (HTTP {st}): {j}")
+        changed[kind.bucket] = True
+        print(f"  + {len(items)} {kind.label} -> groups {group_set}")
+
+    for entry, groups in update.items():
+        st, j = api("PUT", kind.item_path(entry), sid,
+                    {"comment": MANAGED, "enabled": True, "groups": sorted(groups)})
+        if st not in (200, 201):
+            die(f"reassigning {kind.label} {entry!r} failed (HTTP {st}): {j}")
+        changed[kind.bucket] = True
+        print(f"  ~ {entry} -> groups {sorted(groups)}")
+
+    if remove:
+        st, j = api("POST", kind.del_path, sid,
+                    [{"item": r, **kind.del_extra} for r in remove])
+        if st not in (200, 204):
+            die(f"removing {kind.label} failed (HTTP {st}): {j}")
+        changed[kind.bucket] = True
+        print(f"  - {len(remove)} {kind.label}")
+
+
+def _bucket_by_groups(add):
+    """Group an {entry: group_set} add-map into (sorted_group_list, [entries]).
+
+    Entries sharing a group set POST together; the sort keys make output stable.
+    """
+    buckets = {}
+    for entry, groups in add.items():
+        buckets.setdefault(tuple(sorted(groups)), []).append(entry)
+    return [(list(gs), sorted(items)) for gs, items in sorted(buckets.items())]
 
 
 def group_ids(sid):
@@ -278,6 +374,17 @@ def main():
     reconcile(sid, ADLIST, read_file("adlists.txt"))
     reconcile(sid, allow_kind("exact"), allow_exact, allow_remove=fetch_ok)
     reconcile(sid, allow_kind("regex"), allow_regex)
+
+    # Per-group block lists: each group's block.list denies domains for just that
+    # group's members. Same domain across groups unions onto one group-tagged row.
+    deny_exact, deny_regex = [], []
+    for name, path in groups:
+        gid = name_to_id[name]
+        block_exact, block_regex = split_allow(read_path(os.path.join(path, "block.list")))
+        deny_exact.append((gid, block_exact))
+        deny_regex.append((gid, block_regex))
+    reconcile_membership(sid, deny_kind("exact"), build_membership(deny_exact))
+    reconcile_membership(sid, deny_kind("regex"), build_membership(deny_regex))
 
     # Apply: gravity re-fetches adlists (needed for adlist changes); a plain DNS
     # restart is enough to pick up domain-, group-, and client-list changes.

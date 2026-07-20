@@ -80,6 +80,38 @@ class TestPlan:
         assert remove == ["a", "b", "c"]
 
 
+class TestPlanMembership:
+    def test_add_update_remove(self):
+        desired = {"a": {1}, "b": {1, 2}, "c": {2}}
+        current = {"b": {1}, "c": {2}, "d": {1}}
+        add, update, remove = s.plan_membership(desired, current)
+        assert add == {"a": {1}}          # only in desired
+        assert update == {"b": {1, 2}}    # in both, group set differs
+        assert remove == ["d"]            # only in current
+
+    def test_noop_when_identical(self):
+        m = {"a": {1}, "b": {0, 3}}
+        assert s.plan_membership(m, dict(m)) == ({}, {}, [])
+
+    def test_remove_is_sorted(self):
+        _, _, remove = s.plan_membership({}, {"c": {1}, "a": {1}, "b": {1}})
+        assert remove == ["a", "b", "c"]
+
+    def test_all_new(self):
+        add, update, remove = s.plan_membership({"a": {1}}, {})
+        assert add == {"a": {1}}
+        assert update == {} and remove == []
+
+
+class TestBuildMembership:
+    def test_unions_group_ids_per_entry(self):
+        got = s.build_membership([(1, ["a", "b"]), (2, ["b", "c"])])
+        assert got == {"a": {1}, "b": {1, 2}, "c": {2}}
+
+    def test_empty(self):
+        assert s.build_membership([]) == {}
+
+
 class TestDiscoverGroups:
     def test_missing_dir_is_empty(self, tmp_path):
         assert s.discover_groups(str(tmp_path / "nope")) == []
