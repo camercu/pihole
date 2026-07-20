@@ -120,6 +120,19 @@ class TestIsCollision:
         assert not s.is_collision(500, "internal error")
 
 
+class TestNormalizeGroups:
+    def test_empty_means_default_group(self):
+        # FTL may report a default-only entry as [] or [0]; both mean group 0.
+        assert s.normalize_groups([]) == {0}
+
+    def test_explicit_zero_unchanged(self):
+        assert s.normalize_groups([0]) == {0}
+
+    def test_non_default_groups_preserved(self):
+        assert s.normalize_groups([0, 2]) == {0, 2}
+        assert s.normalize_groups([3]) == {3}
+
+
 class TestBuildMembership:
     def test_unions_group_ids_per_entry(self):
         got = s.build_membership([(1, ["a", "b"]), (2, ["b", "c"])])
