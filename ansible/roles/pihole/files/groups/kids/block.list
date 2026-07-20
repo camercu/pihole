@@ -1,0 +1,78 @@
+# Domains blocked for the "kids" group only (social media + AI chatbots).
+# One entry per line; '#' starts a comment. Two forms are accepted:
+#   plain domain   e.g. example.com   (blocks exactly that host)
+#   regex pattern  e.g. (\.|^)example\.com$   (blocks the domain + all subdomains)
+# The (\.|^)...$ form is preferred here so a whole service is covered.
+# Edit freely, then re-run the playbook (or ./setup.sh) to apply.
+
+# ── Social media ────────────────────────────────────────────────────────────
+# Facebook / Messenger
+(\.|^)facebook\.com$
+(\.|^)fbcdn\.net$
+(\.|^)fb\.com$
+(\.|^)fb\.me$
+(\.|^)messenger\.com$
+# Instagram
+(\.|^)instagram\.com$
+(\.|^)cdninstagram\.com$
+# TikTok
+(\.|^)tiktok\.com$
+(\.|^)tiktokcdn\.com$
+(\.|^)tiktokv\.com$
+# Snapchat
+(\.|^)snapchat\.com$
+(\.|^)sc-cdn\.net$
+# X / Twitter
+(\.|^)twitter\.com$
+(\.|^)x\.com$
+(\.|^)twimg\.com$
+(\.|^)t\.co$
+# Reddit
+(\.|^)reddit\.com$
+(\.|^)redd\.it$
+(\.|^)redditstatic\.com$
+(\.|^)redditmedia\.com$
+# Discord
+(\.|^)discord\.com$
+(\.|^)discord\.gg$
+(\.|^)discordapp\.com$
+(\.|^)discordapp\.net$
+(\.|^)discord\.media$
+# Tumblr
+(\.|^)tumblr\.com$
+# Pinterest
+(\.|^)pinterest\.com$
+(\.|^)pinimg\.com$
+# Threads
+(\.|^)threads\.net$
+(\.|^)threads\.com$
+# Twitch
+(\.|^)twitch\.tv$
+(\.|^)ttvnw\.net$
+(\.|^)jtvnw\.net$
+
+# ── AI chatbots ─────────────────────────────────────────────────────────────
+# OpenAI / ChatGPT
+(\.|^)openai\.com$
+(\.|^)chatgpt\.com$
+(\.|^)oaistatic\.com$
+(\.|^)oaiusercontent\.com$
+# Anthropic / Claude
+(\.|^)anthropic\.com$
+(\.|^)claude\.ai$
+# Google Gemini (scoped to the assistant hosts, not all of Google)
+(\.|^)gemini\.google\.com$
+(\.|^)bard\.google\.com$
+# Microsoft Copilot (scoped to the assistant host, not all of Microsoft)
+(\.|^)copilot\.microsoft\.com$
+# Meta AI
+(\.|^)meta\.ai$
+# xAI / Grok
+(\.|^)x\.ai$
+(\.|^)grok\.com$
+# Others
+(\.|^)character\.ai$
+(\.|^)perplexity\.ai$
+(\.|^)poe\.com$
+(\.|^)deepseek\.com$
+(\.|^)mistral\.ai$
