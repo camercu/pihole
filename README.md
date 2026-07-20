@@ -108,6 +108,12 @@ nix-shell --run 'cd ansible && ansible-playbook site.yml --tags pihole'
 # Static checks:
 nix-shell --run 'cd ansible && ansible-playbook --syntax-check site.yml'
 nix-shell --run 'cd ansible && ansible-lint'
+
+# Safety nets — lint helper scripts, run their unit tests, lint playbooks:
+nix-shell --run 'ruff check .'
+nix-shell --run 'pytest -q'
+nix-shell --run 'pre-commit run --all-files'   # all of the above at once
+nix-shell --run 'pre-commit install'           # run them on every git commit
 ```
 
 ## Changing configuration

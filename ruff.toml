@@ -1,0 +1,7 @@
+# Lint/format config for the Python helper scripts (reconciler, backup) + tests.
+# Run via the nix env: `ruff check` / `ruff format` (also wired into pre-commit).
+line-length = 100
+
+[lint]
+# pycodestyle errors/warnings, pyflakes, import sorting, pyupgrade, bugbear.
+select = ["E", "F", "W", "I", "UP", "B"]
