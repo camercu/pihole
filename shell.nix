@@ -10,6 +10,7 @@ pkgs.mkShell {
     sshpass # only needed for first-boot password SSH before keys are installed
     ruff # lint + format the helper scripts
     pre-commit # run the safety-net hooks (ruff, ansible-lint, pytest)
+    just # task runner (see justfile)
     (python3.withPackages (ps: [ ps.pytest ])) # unit tests for the helper scripts
   ];
 }
