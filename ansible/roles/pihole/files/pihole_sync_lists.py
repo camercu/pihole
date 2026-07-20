@@ -217,7 +217,8 @@ def api(method, path, sid=None, body=None):
         headers={"Content-Type": "application/json", "Accept": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req) as r:
+        # Bound the call so a stalled pihole-FTL can't hang the playbook forever.
+        with urllib.request.urlopen(req, timeout=30) as r:
             return r.status, _decode(r.read())
     except urllib.error.HTTPError as e:
         return e.code, _decode(e.read())
@@ -336,6 +337,7 @@ def reconcile_membership(sid, kind, desired):
     created (batched by shared group set), reassigned via PUT when their groups
     drift, and deleted when no longer desired.
     """
+    assert kind.item_path is not None, f"{kind.label} kind has no PUT item_path"
     st, j = api("GET", kind.path, sid)
     if st != 200:
         die(f"GET {kind.label} failed (HTTP {st}): {j}")
@@ -354,7 +356,7 @@ def reconcile_membership(sid, kind, desired):
     for entry, groups in update.items():
         st, j = api("PUT", kind.item_path(entry), sid,
                     {"comment": MANAGED, "groups": sorted(groups), **enabled})
-        if st not in (200, 201):
+        if st not in (200, 201, 204):
             die(f"reassigning {kind.label} {entry!r} failed (HTTP {st}): {j}")
         changed[kind.bucket] = True
         print(f"  ~ {entry} -> groups {sorted(groups)}")
