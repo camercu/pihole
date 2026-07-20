@@ -129,8 +129,9 @@ class Kind(NamedTuple):
     collection: str  # top-level key in the GET response
     field: str  # entry field / add-body field
     del_extra: dict  # extra fields on each batch-delete item
-    bucket: str  # which change bucket to flag ("adlists"/"domains")
+    bucket: str  # which change bucket to flag ("adlists"/"domains"/"clients")
     item_path: object = None  # entry -> single-item URL for PUT (group reassign)
+    enabled: bool = True  # send an "enabled" body field (clients have none)
 
 
 def _q(entry):
@@ -140,6 +141,12 @@ def _q(entry):
 ADLIST = Kind("adlist", "/lists?type=block", "/lists:batchDelete",
               "lists", "address", {"type": "block"}, "adlists",
               lambda e: f"/lists/{_q(e)}?type=block")
+
+# A client (device) is reconciled like a list entry, but keyed by "client",
+# carrying no enabled flag, and its groups control which lists reach the device.
+CLIENT = Kind("client", "/clients", "/clients:batchDelete",
+              "clients", "client", {}, "clients",
+              lambda e: f"/clients/{_q(e)}", enabled=False)
 
 
 def allow_kind(kind):  # kind: "exact" | "regex"
@@ -161,7 +168,7 @@ GROUPS_DIR = os.path.join(DIR, "groups")  # one subdir per Pi-hole group
 
 DEFAULT_GROUP = 0  # Pi-hole's built-in "Default" group; never created or removed
 
-changed = {"adlists": False, "domains": False, "groups": False}
+changed = {"adlists": False, "domains": False, "groups": False, "clients": False}
 # Set False if any remote allowlist fails to download. When a source is
 # incomplete we must NOT treat its domains as "removed" — a transient network
 # blip would otherwise delete legitimately-managed allow entries.
@@ -280,10 +287,11 @@ def reconcile_membership(sid, kind, desired):
                for x in j.get(kind.collection, []) if x.get("comment") == MANAGED}
     add, update, remove = plan_membership(desired, current)
 
+    enabled = {"enabled": True} if kind.enabled else {}
     for group_set, items in _bucket_by_groups(add):
         st, j = api("POST", kind.path, sid,
                     {kind.field: items, "comment": MANAGED,
-                     "enabled": True, "groups": group_set})
+                     "groups": group_set, **enabled})
         if st not in (200, 201):
             die(f"adding {kind.label} failed (HTTP {st}): {j}")
         changed[kind.bucket] = True
@@ -291,7 +299,7 @@ def reconcile_membership(sid, kind, desired):
 
     for entry, groups in update.items():
         st, j = api("PUT", kind.item_path(entry), sid,
-                    {"comment": MANAGED, "enabled": True, "groups": sorted(groups)})
+                    {"comment": MANAGED, "groups": sorted(groups), **enabled})
         if st not in (200, 201):
             die(f"reassigning {kind.label} {entry!r} failed (HTTP {st}): {j}")
         changed[kind.bucket] = True
@@ -378,15 +386,21 @@ def main():
     # adlists.txt to that group. Deny domains come only from per-group block.lists.
     adlists = [(DEFAULT_GROUP, read_file("adlists.txt"))]
     deny_exact, deny_regex = [], []
+    # A group's devices join both the default group (so they keep network-wide ad
+    # and threat blocking) and their own group (which adds its block lists).
+    clients = []
     for name, path in groups:
         gid = name_to_id[name]
         adlists.append((gid, read_path(os.path.join(path, "adlists.txt"))))
         block_exact, block_regex = split_allow(read_path(os.path.join(path, "block.list")))
         deny_exact.append((gid, block_exact))
         deny_regex.append((gid, block_regex))
+        group_clients = read_path(os.path.join(path, "clients.txt"))
+        clients += [(gid, group_clients), (DEFAULT_GROUP, group_clients)]
     reconcile_membership(sid, ADLIST, build_membership(adlists))
     reconcile_membership(sid, deny_kind("exact"), build_membership(deny_exact))
     reconcile_membership(sid, deny_kind("regex"), build_membership(deny_regex))
+    reconcile_membership(sid, CLIENT, build_membership(clients))
 
     # Apply: gravity re-fetches adlists (needed for adlist changes); a plain DNS
     # restart is enough to pick up domain-, group-, and client-list changes.
