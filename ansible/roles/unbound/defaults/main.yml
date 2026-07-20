@@ -20,10 +20,8 @@ unbound_forward_addrs:
   - { addr: "8.8.8.8@853", comment: "google DoT primary" }
   - { addr: "8.8.4.4@853", comment: "google DoT secondary" }
 
-# Local A records served by unbound (in addition to lan_hosts split-horizon).
-unbound_local_records:
-  - { name: "pi.hole", ip: "192.168.0.2" }
-  - { name: "router.home.arpa", ip: "192.168.0.1" }
+# Local split-horizon A records are derived from lan_hosts (group_vars) — every
+# name of every LAN host is served by unbound. See templates/custom-dns-records.
 
 # Enable SafeSearch enforcement (generated into unbound by a role task).
 unbound_safesearch_enabled: true
