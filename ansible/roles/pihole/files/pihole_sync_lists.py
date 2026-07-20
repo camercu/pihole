@@ -364,25 +364,27 @@ def main():
     groups = discover_groups(GROUPS_DIR)
     name_to_id = reconcile_groups(sid, [name for name, _ in groups])
 
+    # Allowlists apply network-wide (default group only).
     allow_exact, allow_regex = split_allow(read_file("allow.list"))
     for url in read_file("allowlist-urls.txt"):
         allow_exact += fetch_domains(url)
-
     # allow_exact draws on remote lists; only remove exact entries if every
-    # source loaded (fetch_ok). Adlists and regex don't fetch, so removal is
-    # always safe there.
-    reconcile(sid, ADLIST, read_file("adlists.txt"))
+    # source loaded (fetch_ok). Regex doesn't fetch, so removal is always safe.
     reconcile(sid, allow_kind("exact"), allow_exact, allow_remove=fetch_ok)
     reconcile(sid, allow_kind("regex"), allow_regex)
 
-    # Per-group block lists: each group's block.list denies domains for just that
-    # group's members. Same domain across groups unions onto one group-tagged row.
+    # Block adlists share one namespace across groups, so reconcile them together:
+    # the top-level adlists.txt applies to the default group, each group's
+    # adlists.txt to that group. Deny domains come only from per-group block.lists.
+    adlists = [(DEFAULT_GROUP, read_file("adlists.txt"))]
     deny_exact, deny_regex = [], []
     for name, path in groups:
         gid = name_to_id[name]
+        adlists.append((gid, read_path(os.path.join(path, "adlists.txt"))))
         block_exact, block_regex = split_allow(read_path(os.path.join(path, "block.list")))
         deny_exact.append((gid, block_exact))
         deny_regex.append((gid, block_regex))
+    reconcile_membership(sid, ADLIST, build_membership(adlists))
     reconcile_membership(sid, deny_kind("exact"), build_membership(deny_exact))
     reconcile_membership(sid, deny_kind("regex"), build_membership(deny_regex))
 
