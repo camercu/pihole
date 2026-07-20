@@ -10,4 +10,6 @@ pihole_dns_upstream: "{{ unbound_listen_address }}#{{ unbound_listen_port }}"
 #   adlists.txt         blocklists (gravity) — one URL per line, # comments ok
 #   allow.list          allowed domains (exact + regex), one per line
 #   allowlist-urls.txt  remote allowlists to fetch and allow
-# The role reconciles them into Pi-hole via its REST API.
+# Per-group blocking (extra lists for some devices only) lives under
+# roles/pihole/files/groups/<name>/ — block.list, adlists.txt, clients.txt.
+# The role reconciles all of it into Pi-hole via its REST API.

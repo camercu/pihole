@@ -86,6 +86,17 @@
     - allow.list
     - allowlist-urls.txt
 
+# One subdirectory per Pi-hole group (e.g. groups/kids/); the reconciler
+# discovers them under PIHOLE_DIR and scopes each group's block lists + clients.
+- name: Deploy per-group config tree
+  ansible.builtin.copy:
+    src: groups/
+    dest: /etc/pihole/managed/groups/
+    owner: root
+    group: root
+    mode: "0644"
+    directory_mode: "0755"
+
 - name: Deploy list reconciler
   ansible.builtin.copy:
     src: pihole_sync_lists.py
