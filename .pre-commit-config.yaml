@@ -1,0 +1,26 @@
+# Safety-net hooks. All run local binaries from the nix env (no hook envs are
+# downloaded), so versions match CI and the repo's "run tools via nix" rule.
+# Install once: `pre-commit install` (inside nix-shell / direnv).
+# Run manually: `pre-commit run --all-files`.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff (lint)
+        entry: ruff check --force-exclude
+        language: system
+        types: [python]
+
+      - id: pytest
+        name: pytest (helper-script unit tests)
+        entry: pytest -q
+        language: system
+        types: [python]
+        pass_filenames: false
+
+      - id: ansible-lint
+        name: ansible-lint
+        entry: ansible-lint -q
+        language: system
+        files: ^ansible/.*\.ya?ml$
+        pass_filenames: false
