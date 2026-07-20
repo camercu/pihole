@@ -4,6 +4,7 @@
 # AI-chatbot coverage lives in block.list — no maintained adlist covers it well.
 # Edit freely, then re-run the playbook (or ./setup.sh) to apply.
 
-# Social media (Sinfonietta social-hosts: Facebook, Instagram, TikTok, Snapchat,
-# Reddit, Discord, Twitch, and many more; hosts format, ~3k domains).
-https://raw.githubusercontent.com/Sinfonietta/hostfiles/master/social-hosts
+# Social media (HaGeZi Social Networks: Facebook, Instagram, TikTok, X, Snapchat,
+# Reddit, Discord, and many more; maintained daily, same source as the global
+# adlists).
+https://cdn.jsdelivr.net/gh/hagezi/dns-blocklists@latest/adblock/social.txt
