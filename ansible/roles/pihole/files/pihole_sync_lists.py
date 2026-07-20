@@ -122,6 +122,17 @@ def plan_membership(desired, current):
     return add, update, remove
 
 
+def normalize_groups(groups):
+    """A group-id list as a set, treating "no groups" as the default group.
+
+    Pi-hole shows an entry with no explicit group assignment in the default
+    group; FTL may report that as [] or [0]. Normalising empty -> {0} makes the
+    reconcile idempotent whichever representation FTL returns, instead of PUTting
+    a default-only entry back to [0] on every run.
+    """
+    return set(groups) or {DEFAULT_GROUP}
+
+
 def build_membership(entries_by_group):
     """[(group_id, [entries])] -> {entry: set(group_ids)}, unioning duplicates.
 
@@ -328,7 +339,7 @@ def reconcile_membership(sid, kind, desired):
     st, j = api("GET", kind.path, sid)
     if st != 200:
         die(f"GET {kind.label} failed (HTTP {st}): {j}")
-    current = {x[kind.field]: set(x.get("groups", []))
+    current = {x[kind.field]: normalize_groups(x.get("groups", []))
                for x in j.get(kind.collection, []) if x.get("comment") == MANAGED}
     add, update, remove = plan_membership(desired, current)
 
