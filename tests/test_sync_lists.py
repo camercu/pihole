@@ -120,6 +120,15 @@ class TestIsCollision:
         assert not s.is_collision(500, "internal error")
 
 
+class TestReconcileMembershipGuard:
+    def test_rejects_kind_without_item_path(self):
+        # allow_kind has no PUT item_path; membership reconcile needs one, so it
+        # must fail fast (before any API call) rather than NoneType-crash mid-run.
+        import pytest
+        with pytest.raises(AssertionError):
+            s.reconcile_membership(None, s.allow_kind("exact"), {})
+
+
 class TestNormalizeGroups:
     def test_empty_means_default_group(self):
         # FTL may report a default-only entry as [] or [0]; both mean group 0.
