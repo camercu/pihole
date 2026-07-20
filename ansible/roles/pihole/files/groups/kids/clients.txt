@@ -1,0 +1,16 @@
+# Devices in the "kids" group. Each device listed here is placed in this group
+# AND the default group, so it keeps normal ad/threat blocking and additionally
+# gets this group's block lists (social media + AI chatbots).
+#
+# One device per line; '#' starts a comment. A device is identified by any of:
+#   IP address     192.168.1.42
+#   MAC address    AA:BB:CC:DD:EE:FF   (only for devices on the same L2 network)
+#   hostname       kids-ipad
+#   subnet (CIDR)  192.168.1.0/24
+#
+# This file ships EMPTY on purpose: until you add a device, the kids group and
+# its block lists exist but affect nobody. Add your kids' devices below, then
+# re-run the playbook (or ./setup.sh) to apply.
+
+# 192.168.1.42
+# kids-ipad

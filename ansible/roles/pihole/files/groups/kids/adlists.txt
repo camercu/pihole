@@ -1,0 +1,9 @@
+# Remote blocklists applied to the "kids" group only.
+# One URL per line; blank lines and lines after '#' are ignored.
+# These broaden the explicit block.list with a maintained social-media feed.
+# AI-chatbot coverage lives in block.list — no maintained adlist covers it well.
+# Edit freely, then re-run the playbook (or ./setup.sh) to apply.
+
+# Social media (Sinfonietta social-hosts: Facebook, Instagram, TikTok, Snapchat,
+# Reddit, Discord, Twitch, and many more; hosts format, ~3k domains).
+https://raw.githubusercontent.com/Sinfonietta/hostfiles/master/social-hosts
