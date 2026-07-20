@@ -1,25 +1,34 @@
 #!/usr/bin/env python3
-"""Reconcile Pi-hole blocklists/allowlists from config files via the FTL REST API.
+"""Reconcile Pi-hole blocklists/allowlists/groups from config files via the FTL API.
 
 Declarative and idempotent: entries we manage (comment == MANAGED) are made to
 match the config files exactly — missing ones added, ours no longer in config
 removed. Entries added by hand (any other comment) are left untouched.
 
 Runs on the Pi-hole host against the local API. Reads, from PIHOLE_DIR:
-  adlists.txt          block adlists   (one URL per line, '#' comments)
-  allow.list           allowed domains (exact or regex, one per line)
+  adlists.txt          block adlists   (one URL per line, '#' comments)  -> default group
+  allow.list           allowed domains (exact or regex, one per line)    -> network-wide
   allowlist-urls.txt   remote allowlists to fetch and allow
+  groups/<name>/       one dir per Pi-hole group, each with:
+    block.list           domains blocked for that group (exact or regex)
+    adlists.txt          remote blocklists for that group
+    clients.txt          devices in that group (IP/MAC/hostname/subnet)
+  A device joins its group AND the default group (keeps ad/threat blocking).
 
 Environment:
   PIHOLE_PASSWORD  admin/API password ('' => API needs no auth)
   PIHOLE_API       API base   (default http://localhost/api)
   PIHOLE_DIR       config dir (default /etc/pihole/managed)
 
-Prints 'CHANGED' when it modifies anything (for Ansible's changed_when).
+Prints 'CHANGED' when it modifies anything (for Ansible's changed_when). Exits
+non-zero if an entry couldn't be added because it already exists as a hand-added
+one (warned and skipped, so the rest of the run still converges).
 
 Structure: the pure functions below (clean_lines, is_regex, split_allow,
-host_domain, plan) hold the decision logic and are unit-tested; everything that
-touches the network or filesystem is the thin shell beneath them.
+host_domain, plan, plan_membership, build_membership, assemble_desired,
+normalize_groups, discover_groups, is_collision) hold the decision logic and are
+unit-tested; everything that touches the network or filesystem is the thin shell
+beneath them.
 """
 import json
 import os

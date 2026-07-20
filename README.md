@@ -161,7 +161,10 @@ lists into Pi-hole through its **REST API** (`pihole_sync_lists.py`): it adds
 what's missing, removes what it previously added but is no longer listed, and
 rebuilds gravity only when adlists actually change. It's declarative and
 idempotent — a no-op run makes no changes. A remote allowlist that fails to
-download is never treated as "removed", so a network blip can't wipe entries.
+download is never treated as "removed", so a network blip can't wipe entries. If
+you also add an entry (adlist, domain, or client) **by hand** in the admin UI
+that a config file already manages, it's skipped with a warning and the run exits
+non-zero so you notice — remove the hand-added copy to let the role manage it.
 
 ## Secrets (Ansible Vault)
 
