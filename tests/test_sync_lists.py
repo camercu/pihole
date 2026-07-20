@@ -135,6 +135,17 @@ class TestAssembleDesired:
         d = s.assemble_desired(["shared.txt"], [(1, ["shared.txt"], [], [])])
         assert d["adlists"] == {"shared.txt": {0, 1}}
 
+    def test_two_groups_accumulate_not_overwrite(self):
+        # Guards against `+=` -> `=` in the loop: a shared adlist/client across
+        # two groups must union all groups, not just the last one's.
+        d = s.assemble_desired(
+            [],
+            [(1, ["shared.txt"], [], ["10.0.0.5"]),
+             (2, ["shared.txt"], [], ["10.0.0.5"])],
+        )
+        assert d["adlists"] == {"shared.txt": {1, 2}}
+        assert d["clients"] == {"10.0.0.5": {0, 1, 2}}  # both groups + default
+
     def test_empty(self):
         assert s.assemble_desired([], []) == {
             "adlists": {}, "deny_exact": {}, "deny_regex": {}, "clients": {}}
@@ -142,7 +153,9 @@ class TestAssembleDesired:
 
 class TestBucketByGroups:
     def test_groups_shared_group_set_into_one_batch(self):
-        add = {"a": {1}, "b": {1}, "c": {0, 1}}
+        # Items inserted out of order so the assertion can only pass if the
+        # batch actually sorts them (guards the `sorted(items)`).
+        add = {"b": {1}, "a": {1}, "c": {0, 1}}
         got = s._bucket_by_groups(add)
         # sorted by group-set key, items sorted within each batch
         assert got == [([0, 1], ["c"]), ([1], ["a", "b"])]
