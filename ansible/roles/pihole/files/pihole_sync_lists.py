@@ -146,6 +146,38 @@ def build_membership(entries_by_group):
     return membership
 
 
+def assemble_desired(default_adlists, group_inputs):
+    """Build the four desired membership maps from parsed config (pure).
+
+    This is where the product decisions live, so they are unit-testable without
+    a Pi-hole:
+      - top-level adlists.txt applies to the default group; each group's
+        adlists.txt to that group (same URL in both unions onto one row);
+      - a group's block.list denies domains for that group only (exact vs regex
+        split by shape);
+      - a group's devices join both their group AND the default group, so they
+        keep network-wide ad/threat blocking on top of the group's block lists.
+
+    default_adlists: adlist URLs for the default group.
+    group_inputs: list of (gid, adlist_urls, block_lines, client_ids) per group.
+    Returns {"adlists"|"deny_exact"|"deny_regex"|"clients": {entry: set(gids)}}.
+    """
+    adlists = [(DEFAULT_GROUP, default_adlists)]
+    deny_exact, deny_regex, clients = [], [], []
+    for gid, adlist_urls, block_lines, client_ids in group_inputs:
+        adlists.append((gid, adlist_urls))
+        block_exact, block_regex = split_allow(block_lines)
+        deny_exact.append((gid, block_exact))
+        deny_regex.append((gid, block_regex))
+        clients += [(gid, client_ids), (DEFAULT_GROUP, client_ids)]
+    return {
+        "adlists": build_membership(adlists),
+        "deny_exact": build_membership(deny_exact),
+        "deny_regex": build_membership(deny_regex),
+        "clients": build_membership(clients),
+    }
+
+
 # ── list kinds (data describing each reconcilable list) ─────────────────────
 class Kind(NamedTuple):
     label: str  # human label, e.g. "adlist", "allow/exact"
@@ -437,26 +469,21 @@ def main():
     reconcile(sid, allow_kind("exact"), allow_exact, allow_remove=fetch_ok)
     reconcile(sid, allow_kind("regex"), allow_regex)
 
-    # Block adlists share one namespace across groups, so reconcile them together:
-    # the top-level adlists.txt applies to the default group, each group's
-    # adlists.txt to that group. Deny domains come only from per-group block.lists.
-    adlists = [(DEFAULT_GROUP, read_file("adlists.txt"))]
-    deny_exact, deny_regex = [], []
-    # A group's devices join both the default group (so they keep network-wide ad
-    # and threat blocking) and their own group (which adds its block lists).
-    clients = []
-    for name, path in groups:
-        gid = name_to_id[name]
-        adlists.append((gid, read_path(os.path.join(path, "adlists.txt"))))
-        block_exact, block_regex = split_allow(read_path(os.path.join(path, "block.list")))
-        deny_exact.append((gid, block_exact))
-        deny_regex.append((gid, block_regex))
-        group_clients = read_path(os.path.join(path, "clients.txt"))
-        clients += [(gid, group_clients), (DEFAULT_GROUP, group_clients)]
-    reconcile_membership(sid, ADLIST, build_membership(adlists))
-    reconcile_membership(sid, deny_kind("exact"), build_membership(deny_exact))
-    reconcile_membership(sid, deny_kind("regex"), build_membership(deny_regex))
-    reconcile_membership(sid, CLIENT, build_membership(clients))
+    # Read each group's files, then assemble the desired group-scoped state (the
+    # product decisions live in assemble_desired, unit-tested). Block adlists span
+    # one namespace across groups, so all four maps reconcile via membership.
+    group_inputs = [
+        (name_to_id[name],
+         read_path(os.path.join(path, "adlists.txt")),
+         read_path(os.path.join(path, "block.list")),
+         read_path(os.path.join(path, "clients.txt")))
+        for name, path in groups
+    ]
+    desired = assemble_desired(read_file("adlists.txt"), group_inputs)
+    reconcile_membership(sid, ADLIST, desired["adlists"])
+    reconcile_membership(sid, deny_kind("exact"), desired["deny_exact"])
+    reconcile_membership(sid, deny_kind("regex"), desired["deny_regex"])
+    reconcile_membership(sid, CLIENT, desired["clients"])
 
     # Apply: gravity re-fetches adlists (needed for adlist changes); a plain DNS
     # restart is enough to pick up domain-, group-, and client-list changes.
