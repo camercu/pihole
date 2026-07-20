@@ -113,11 +113,25 @@ nix-shell --run 'cd ansible && ansible-lint'
 ## Changing configuration
 
 **Blocklists / allowlists** are plain, commented text files under
-`ansible/roles/pihole/files/` — edit them directly:
+`ansible/roles/pihole/files/` — edit them directly. These apply network-wide
+(Pi-hole's default group):
 
 - `adlists.txt` — blocklists (gravity), one URL per line
 - `allow.list` — allowed domains, exact or regex, one per line
 - `allowlist-urls.txt` — remote allowlists to fetch and allow
+
+**Groups** let you block extra things for *some* devices only. Each subdirectory
+of `ansible/roles/pihole/files/groups/` is a Pi-hole group (the directory name is
+the group name), holding up to three files:
+
+- `block.list` — domains blocked for this group, exact or regex, one per line
+- `adlists.txt` — remote blocklists applied to this group
+- `clients.txt` — the group's devices (IP / MAC / hostname / subnet), one per line
+
+A device listed in a group's `clients.txt` joins that group **and** the default
+group, so it keeps normal ad/threat blocking and additionally gets the group's
+block lists. A shipped **`kids`** group blocks social media + AI chatbots; it
+affects nobody until you add your kids' devices to `groups/kids/clients.txt`.
 
 Other settings live with the role that owns them (each `roles/<role>/defaults/
 main.yml`), which ship **generic defaults** so the playbook runs anywhere.
