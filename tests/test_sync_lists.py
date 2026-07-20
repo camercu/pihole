@@ -2,6 +2,11 @@
 import pihole_sync_lists as s
 
 
+def _write(path, text):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
 class TestCleanLines:
     def test_strips_comments_blanks_and_whitespace(self):
         text = "a.com\n  b.com  \n# comment\n\nc.com # trailing\n"
@@ -73,3 +78,20 @@ class TestPlan:
     def test_remove_is_sorted(self):
         _, remove = s.plan([], {"c", "a", "b"})
         assert remove == ["a", "b", "c"]
+
+
+class TestDiscoverGroups:
+    def test_missing_dir_is_empty(self, tmp_path):
+        assert s.discover_groups(str(tmp_path / "nope")) == []
+
+    def test_lists_subdirs_sorted_by_name(self, tmp_path):
+        (tmp_path / "teens").mkdir()
+        (tmp_path / "kids").mkdir()
+        got = s.discover_groups(str(tmp_path))
+        assert [name for name, _ in got] == ["kids", "teens"]
+        assert got[0] == ("kids", str(tmp_path / "kids"))
+
+    def test_ignores_non_directories(self, tmp_path):
+        (tmp_path / "kids").mkdir()
+        _write(tmp_path / "README.txt", "not a group\n")
+        assert [name for name, _ in s.discover_groups(str(tmp_path))] == ["kids"]
