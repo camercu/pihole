@@ -63,6 +63,22 @@ def host_domain(line):
     return line.split()[-1]
 
 
+def discover_groups(groups_dir):
+    """(name, path) for each subdirectory of groups_dir, sorted by name.
+
+    A group's directory name is its Pi-hole group name. A missing groups_dir (no
+    groups configured) yields []; non-directory entries are ignored.
+    """
+    if not os.path.isdir(groups_dir):
+        return []
+    out = []
+    for name in sorted(os.listdir(groups_dir)):
+        path = os.path.join(groups_dir, name)
+        if os.path.isdir(path):
+            out.append((name, path))
+    return out
+
+
 def plan(desired, current):
     """Pure diff: (to_add, to_remove).
 
@@ -100,8 +116,11 @@ def allow_kind(kind):  # kind: "exact" | "regex"
 API = os.environ.get("PIHOLE_API", "http://localhost/api")
 PW = os.environ.get("PIHOLE_PASSWORD", "")
 DIR = os.environ.get("PIHOLE_DIR", "/etc/pihole/managed")
+GROUPS_DIR = os.path.join(DIR, "groups")  # one subdir per Pi-hole group
 
-changed = {"adlists": False, "domains": False}
+DEFAULT_GROUP = 0  # Pi-hole's built-in "Default" group; never created or removed
+
+changed = {"adlists": False, "domains": False, "groups": False}
 # Set False if any remote allowlist fails to download. When a source is
 # incomplete we must NOT treat its domains as "removed" — a transient network
 # blip would otherwise delete legitimately-managed allow entries.
@@ -202,8 +221,52 @@ def reconcile(sid, kind, desired, allow_remove=True):
         print(f"  - {len(remove)} {kind.label}")
 
 
+def group_ids(sid):
+    """name -> id for every Pi-hole group (built-in + managed)."""
+    st, j = api("GET", "/groups", sid)
+    if st != 200:
+        die(f"GET groups failed (HTTP {st}): {j}")
+    return {g["name"]: g["id"] for g in j.get("groups", [])}
+
+
+def reconcile_groups(sid, desired_names):
+    """Ensure a Pi-hole group exists for each configured group dir.
+
+    Creates managed groups that are missing and removes managed groups no longer
+    configured. The built-in "Default" group and any group a user made by hand
+    (comment != MANAGED) are left untouched. Returns name -> id for all groups.
+    """
+    st, j = api("GET", "/groups", sid)
+    if st != 200:
+        die(f"GET groups failed (HTTP {st}): {j}")
+    present = {g["name"] for g in j.get("groups", [])}
+    managed = {g["name"] for g in j.get("groups", []) if g.get("comment") == MANAGED}
+    add = [n for n in dict.fromkeys(desired_names) if n not in present]
+    remove = sorted(n for n in managed if n not in set(desired_names))
+
+    for name in add:
+        st, j = api("POST", "/groups", sid,
+                    {"name": name, "comment": MANAGED, "enabled": True})
+        if st not in (200, 201):
+            die(f"adding group {name!r} failed (HTTP {st}): {j}")
+        changed["groups"] = True
+        print(f"  + group {name}")
+
+    for name in remove:
+        st, j = api("DELETE", f"/groups/{urllib.parse.quote(name)}", sid)
+        if st not in (200, 204):
+            die(f"removing group {name!r} failed (HTTP {st}): {j}")
+        changed["groups"] = True
+        print(f"  - group {name}")
+
+    return group_ids(sid)
+
+
 def main():
     sid = login()
+
+    groups = discover_groups(GROUPS_DIR)
+    name_to_id = reconcile_groups(sid, [name for name, _ in groups])
 
     allow_exact, allow_regex = split_allow(read_file("allow.list"))
     for url in read_file("allowlist-urls.txt"):
@@ -216,18 +279,18 @@ def main():
     reconcile(sid, allow_kind("exact"), allow_exact, allow_remove=fetch_ok)
     reconcile(sid, allow_kind("regex"), allow_regex)
 
-    # Apply: gravity re-fetches adlists (needed for adlist changes); a plain
-    # DNS restart is enough to pick up domain-list changes.
+    # Apply: gravity re-fetches adlists (needed for adlist changes); a plain DNS
+    # restart is enough to pick up domain-, group-, and client-list changes.
     if changed["adlists"]:
         print("Rebuilding gravity...")
         st, _ = api("POST", "/action/gravity", sid)
         if st != 200:
             die(f"gravity rebuild failed (HTTP {st})")
-    elif changed["domains"]:
+    elif any(changed.values()):
         print("Reloading DNS...")
         api("POST", "/action/restartdns", sid)
 
-    print("CHANGED" if (changed["adlists"] or changed["domains"]) else "no changes")
+    print("CHANGED" if any(changed.values()) else "no changes")
 
 
 if __name__ == "__main__":
