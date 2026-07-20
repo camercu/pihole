@@ -1,12 +1,26 @@
 ---
-# Base packages installed on every host.
+# ── Site facts ────────────────────────────────────────────────────────────
+# Generic defaults so the playbook runs anywhere out of the box. The real
+# per-site values live in the gitignored group_vars/all/local.yml, which
+# overrides these. They are kept here — Ansible's lowest-precedence tier —
+# rather than in group_vars/all/main.yml, because files in a group_vars dir
+# load alphabetically and main.yml would otherwise override local.yml.
+
+# Host identity.
+pihole_hostname: pihole
+system_timezone: Etc/UTC
+system_locale: en_US.UTF-8
+
+# SSH public keys authorised for the ansible_user. Installed by `common`; read
+# by `hardening` to decide whether to enforce key-only SSH.
+authorized_ssh_keys: []
+
+# LAN hosts written to /etc/hosts, and served as split-horizon A records by
+# `unbound` (records derived from this list). First name token is canonical;
+# the rest are aliases. Empty default => /etc/hosts gets only the localhost
+# block and unbound serves no local records. Set the real map in local.yml.
+lan_hosts: []
+
+# ── Base packages ─────────────────────────────────────────────────────────
 common_packages:
   - neovim
-
-# SSH public keys authorised for the ansible_user. Per-site, so the real value
-# lives in the gitignored local.yml (written by ./setup.sh) which overrides this
-# default. Kept here — the lowest precedence tier — rather than group_vars/main.yml
-# so local.yml actually wins (files in group_vars/all load alphabetically, so
-# main.yml would otherwise override local.yml). Installed by `common`; read by
-# `hardening` to decide whether to enforce key-only SSH.
-authorized_ssh_keys: []
