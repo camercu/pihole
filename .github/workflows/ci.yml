@@ -15,7 +15,7 @@ jobs:
     name: lint + unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v30
       # Run every tool through the repo's nix env so versions match local/dev.
       - run: nix-shell --run 'just lint'
@@ -25,7 +25,7 @@ jobs:
     name: end-to-end (real Pi-hole container)
     runs-on: ubuntu-latest  # Docker is preinstalled on GitHub's ubuntu runners
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v30
       # Docker comes from the runner; pytest/restic from the nix env. The fixture
       # starts a real pihole container and drives the deployed scripts against it.
