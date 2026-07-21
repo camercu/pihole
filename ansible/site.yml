@@ -11,6 +11,8 @@
       tags: [unbound]
     - role: pihole # Pi-hole install, adlists, allowlists, upstream -> unbound
       tags: [pihole]
+    - role: alerting # OnFailure= notifier for the scheduled jobs
+      tags: [alerting]
     - role: maintenance # scheduled gravity/updates/root.hints refresh + reboot
       tags: [maintenance]
     - role: backup # weekly Teleporter export -> restic on the NAS (opt-in)

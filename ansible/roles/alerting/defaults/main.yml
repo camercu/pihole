@@ -1,0 +1,6 @@
+---
+# Where a failed maintenance/backup run reports to. Empty => the failure is
+# still logged to the journal (systemctl/journalctl), just not sent off-box.
+# Point it at e.g. an ntfy topic (https://ntfy.sh/your-topic) to be paged.
+# Prefer setting this in local.yml; if it embeds a token, vault it.
+alerting_webhook_url: ""

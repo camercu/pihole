@@ -1,6 +1,7 @@
 {# Managed by Ansible (roles/maintenance). #}
 [Unit]
 Description={{ item.description }}
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
