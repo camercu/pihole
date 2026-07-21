@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same ref supersedes an in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    name: lint + unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v30
+      # Run every tool through the repo's nix env so versions match local/dev.
+      - run: nix-shell --run 'just lint'
+      - run: nix-shell --run 'just test'
+
+  integration:
+    name: end-to-end (real Pi-hole container)
+    runs-on: ubuntu-latest  # Docker is preinstalled on GitHub's ubuntu runners
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v30
+      # Docker comes from the runner; pytest/restic from the nix env. The fixture
+      # starts a real pihole container and drives the deployed scripts against it.
+      - run: nix-shell --run 'PIHOLE_IT=1 pytest tests/integration -q'
