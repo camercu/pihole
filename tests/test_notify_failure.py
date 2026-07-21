@@ -38,8 +38,11 @@ def test_main_survives_a_malformed_webhook_url(monkeypatch):
     n.main(["notify_failure.py", "pihole-backup.service"],
            {"NOTIFY_WEBHOOK_URL": "ntfy.sh/topic"})  # scheme-less on purpose
 
-    # It fell back to logging the post failure rather than raising.
-    assert any("failed to post alert" in " ".join(map(str, c)) for c in calls)
+    joined = [" ".join(map(str, c)) for c in calls]
+    # The original unit failure was still recorded (not masked by the bad webhook)...
+    assert any("pihole-backup.service failed" in c for c in joined)
+    # ...and the post failure fell back to a log line rather than raising.
+    assert any("failed to post alert" in c for c in joined)
 
 
 def test_main_without_a_webhook_makes_no_network_call(monkeypatch):

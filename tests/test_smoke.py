@@ -111,6 +111,39 @@ def test_login_returns_none_on_an_unexpected_response_body(monkeypatch):
     assert s.login() is None
 
 
+def test_dns_query_returns_none_on_a_socket_error(monkeypatch):
+    # A resolver that can't even be reached (socket error) is "no response",
+    # not an empty answer — so it can never read as blocked. Mirrors _api.
+    class FakeSock:
+        def settimeout(self, _):
+            pass
+
+        def sendto(self, *a):
+            raise OSError("network is unreachable")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(s.socket, "socket", lambda *a, **k: FakeSock())
+    assert s.dns_query("127.0.0.1", 53, "example.com") is None
+
+
+def test_main_reports_a_failed_login_as_a_named_failing_check(monkeypatch, capsys):
+    # A configured-but-unusable password (login -> None) must surface as an
+    # explicit FAIL line and a non-zero exit, not a cryptic "blocking (got None)".
+    monkeypatch.setattr(s, "PW", "secret")
+    monkeypatch.setattr(s, "login", lambda: None)
+    monkeypatch.setattr(s, "_api", lambda *a, **k: (None, {}))
+    monkeypatch.setattr(s, "dns_query", lambda *a, **k: None)  # no real sockets
+
+    with pytest.raises(SystemExit) as exc:
+        s.main()
+
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "[FAIL] API login (failed" in out
+
+
 def test_is_blocked_empty_answer_is_blocked():
     assert s.is_blocked([]) is True
 
