@@ -6,6 +6,11 @@ ansible/collections/
 # uv / python (setup.sh toolchain)
 .venv/
 __pycache__/
+.pytest_cache/
+.ruff_cache/
+
+# macOS
+.DS_Store
 
 # Vault passphrase file — NEVER commit
 .vault-pass
