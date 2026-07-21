@@ -40,6 +40,21 @@ def export_teleporter(sid, dest):
         f.write(r.read())
 
 
+def backup_argv(bundle):
+    """restic command that stores the bundle, tagged so retention can find it."""
+    return ["restic", "backup", "--tag", "pihole", bundle]
+
+
+def forget_argv(keep):
+    """restic command that prunes to the last `keep` weekly snapshots.
+
+    Grouping by host+tags keeps this repo's Pi-hole snapshots in their own
+    retention group, so a shared restic repo can't drop them early.
+    """
+    return ["restic", "forget", "--tag", "pihole", "--group-by", "host,tags",
+            "--keep-weekly", keep, "--prune"]
+
+
 def main():
     sid = login()
     os.makedirs(STAGING, exist_ok=True)
@@ -47,12 +62,8 @@ def main():
     try:
         export_teleporter(sid, bundle)
         # restic reads RESTIC_REPOSITORY / RESTIC_PASSWORD from the environment.
-        subprocess.run(["restic", "backup", "--tag", "pihole", bundle], check=True)
-        subprocess.run(
-            ["restic", "forget", "--tag", "pihole", "--group-by", "host,tags",
-             "--keep-weekly", KEEP, "--prune"],
-            check=True,
-        )
+        subprocess.run(backup_argv(bundle), check=True)
+        subprocess.run(forget_argv(KEEP), check=True)
     finally:
         if os.path.exists(bundle):
             os.remove(bundle)

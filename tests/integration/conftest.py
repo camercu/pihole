@@ -35,6 +35,7 @@ FILES_PORT = 8000  # host -> fileserver :8000 (also reachable in-net as FILES_CT
 MANAGED = "managed by ansible"
 _ROOT = Path(__file__).resolve().parents[2]
 SYNC_SCRIPT = _ROOT / "ansible/roles/pihole/files/pihole_sync_lists.py"
+BACKUP_SCRIPT = _ROOT / "ansible/roles/backup/files/pihole_backup.py"
 
 
 def _detect_runtime():
@@ -255,4 +256,14 @@ class SimpleEnv:
                "PIHOLE_DIR": str(config_dir)}
         return subprocess.run(
             ["python", str(SYNC_SCRIPT)], env=env, text=True,
+            capture_output=True)
+
+    def run_backup(self, restic_env):
+        """Run the real backup script; restic_env carries the RESTIC_* settings."""
+        env = {**os.environ,
+               "PIHOLE_API": self.base,
+               "PIHOLE_PASSWORD": PASSWORD,
+               **restic_env}
+        return subprocess.run(
+            ["python", str(BACKUP_SCRIPT)], env=env, text=True,
             capture_output=True)
