@@ -29,6 +29,19 @@ def test_main_tails_the_journal_for_the_exact_unit_that_failed(monkeypatch):
     assert "pihole/backup.service" not in journalctl
 
 
+def test_main_survives_a_malformed_webhook_url(monkeypatch):
+    # A misconfigured webhook (e.g. no scheme) makes urlopen raise ValueError,
+    # not OSError. The notifier must log and move on, never crash — a broken
+    # webhook must not mask the original unit failure it was told to report.
+    calls = _record_subprocess(monkeypatch)
+
+    n.main(["notify_failure.py", "pihole-backup.service"],
+           {"NOTIFY_WEBHOOK_URL": "ntfy.sh/topic"})  # scheme-less on purpose
+
+    # It fell back to logging the post failure rather than raising.
+    assert any("failed to post alert" in " ".join(map(str, c)) for c in calls)
+
+
 def test_main_without_a_webhook_makes_no_network_call(monkeypatch):
     _record_subprocess(monkeypatch)
 

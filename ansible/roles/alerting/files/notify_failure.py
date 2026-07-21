@@ -59,8 +59,9 @@ def main(argv, env):
     if should_notify(url):
         try:
             urllib.request.urlopen(build_request(url, message, TITLE), timeout=15)
-        except OSError as e:
-            # A down webhook must not mask the original failure; log and move on.
+        except (OSError, ValueError) as e:
+            # A down (OSError) or malformed (ValueError: no scheme) webhook must
+            # not mask the original failure; log and move on.
             subprocess.run(["logger", "-t", "pihole-alert", "-p", "user.err",
                             f"failed to post alert: {e}"], check=False)
 
