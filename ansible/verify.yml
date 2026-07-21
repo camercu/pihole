@@ -1,0 +1,11 @@
+---
+# Post-deploy health check. Run after site.yml, against the live host:
+#   nix-shell --run 'ansible-playbook verify.yml'
+# Fails loudly if DNS isn't resolving, gravity/blocking is off, a known ad
+# domain isn't sinkholed, unbound isn't answering, or the admin UI is down.
+- name: Verify Pi-hole host health
+  hosts: pihole
+  become: true
+  roles:
+    - role: verify
+      tags: [verify]

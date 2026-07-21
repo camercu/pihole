@@ -1,0 +1,5 @@
+---
+# Probe domains for the post-deploy smoke test (roles/verify).
+verify_resolve_domain: example.com # must resolve through Pi-hole -> unbound
+verify_blocked_domain: doubleclick.net # on the default adlists; must be sinkholed
+verify_unbound_port: 5335 # unbound's local listener; must answer directly

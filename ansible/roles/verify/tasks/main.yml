@@ -1,0 +1,52 @@
+---
+# Post-deploy smoke test: assert the box really resolves and blocks, not just
+# that provisioning reported "ok". Deploys the smoke checker and runs it, plus
+# checks the services and the admin UI directly.
+
+- name: Collect service facts
+  ansible.builtin.service_facts:
+
+- name: Require core services to be running
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.services[item ~ '.service'].state | default('') == 'running'
+    fail_msg: "{{ item }} is not running"
+  loop:
+    - pihole-FTL
+    - unbound
+
+- name: Deploy the smoke checker
+  ansible.builtin.copy:
+    src: pihole_smoke.py
+    dest: /usr/local/bin/pihole-smoke.py
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Run the smoke checks (DNS + blocking + gravity + unbound)
+  ansible.builtin.command:
+    cmd: /usr/local/bin/pihole-smoke.py
+  environment:
+    PIHOLE_API: http://localhost/api
+    PIHOLE_PASSWORD: "{{ pihole_web_password | default('') }}"
+    SMOKE_RESOLVE_DOMAIN: "{{ verify_resolve_domain }}"
+    SMOKE_BLOCKED_DOMAIN: "{{ verify_blocked_domain }}"
+    SMOKE_UNBOUND_PORT: "{{ verify_unbound_port }}"
+  register: verify_smoke
+  changed_when: false
+  failed_when: false
+
+- name: Show smoke output
+  ansible.builtin.debug:
+    var: verify_smoke.stdout_lines
+
+- name: Fail the run if any smoke check failed
+  ansible.builtin.assert:
+    that: verify_smoke.rc == 0
+    fail_msg: "smoke checks failed (see output above)"
+
+- name: Admin UI answers over HTTPS
+  ansible.builtin.uri:
+    url: https://localhost/admin/
+    validate_certs: false # self-signed cert on the box
+    status_code: [200, 301, 302, 401]

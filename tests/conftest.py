@@ -8,5 +8,5 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
 for _d in ("ansible/roles/pihole/files", "ansible/roles/backup/files",
-           "ansible/roles/alerting/files"):
+           "ansible/roles/alerting/files", "ansible/roles/verify/files"):
     sys.path.insert(0, str(_ROOT / _d))

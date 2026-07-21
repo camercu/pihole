@@ -12,6 +12,7 @@ Reads everything from the environment (see /etc/pihole-backup/env):
 import json
 import os
 import subprocess
+import urllib.error
 import urllib.request
 
 API = os.environ.get("PIHOLE_API", "http://localhost/api")
@@ -32,6 +33,17 @@ def login():
     )
     with urllib.request.urlopen(req, timeout=30) as r:
         return json.load(r)["session"]["sid"]
+
+
+def logout(sid):
+    """Release the API session seat (see pihole_sync_lists.logout)."""
+    if not sid:
+        return
+    req = urllib.request.Request(API + f"/auth?sid={sid}", method="DELETE")
+    try:
+        urllib.request.urlopen(req, timeout=30)
+    except urllib.error.URLError:
+        pass  # best-effort; the seat expires on its own anyway
 
 
 def export_teleporter(sid, dest):
@@ -67,6 +79,7 @@ def main():
     finally:
         if os.path.exists(bundle):
             os.remove(bundle)
+        logout(sid)
     print("backup OK")
 
 
