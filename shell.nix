@@ -11,6 +11,7 @@ pkgs.mkShell {
     ruff # lint + format the helper scripts
     pre-commit # run the safety-net hooks (ruff, ansible-lint, pytest)
     just # task runner (see justfile)
+    restic # backup round-trip in the integration tests (matches the backup role)
     (python3.withPackages (ps: [ ps.pytest ])) # unit tests for the helper scripts
   ];
 }
