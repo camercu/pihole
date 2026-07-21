@@ -2,6 +2,7 @@
 import struct
 
 import pihole_smoke as s
+import pytest
 
 
 def test_build_query_encodes_name_and_asks_for_an_a_record():
@@ -14,6 +15,13 @@ def test_build_query_encodes_name_and_asks_for_an_a_record():
     # name is length-prefixed labels ending in a root octet, then QTYPE/QCLASS
     assert q[12:19] == b"\x01a\x03com\x00"
     assert struct.unpack(">HH", q[19:23]) == (1, 1)  # A / IN
+
+
+def test_build_query_rejects_an_empty_label():
+    # A domain with an empty label ("a..b", trailing dot) would encode a
+    # zero-length label mid-name, silently truncating the query. Reject it.
+    with pytest.raises(ValueError):
+        s.build_query("a..b")
 
 
 def _response(name, ip, qid=0x1234):

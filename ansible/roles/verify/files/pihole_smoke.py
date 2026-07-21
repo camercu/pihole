@@ -27,8 +27,13 @@ import urllib.request
 # ── pure DNS wire helpers (unit-tested) ─────────────────────────────────────
 def build_query(name, qid=0x1234):
     """A minimal DNS query packet for the A record of `name` (recursion desired)."""
+    parts = name.split(".")
+    if any(not part for part in parts):
+        # An empty label ("a..b", trailing dot) would encode a zero-length octet
+        # mid-name, silently truncating the query. Reject rather than mis-encode.
+        raise ValueError(f"invalid domain {name!r}: empty label")
     header = struct.pack(">HHHHHH", qid, 0x0100, 1, 0, 0, 0)
-    labels = b"".join(bytes([len(x)]) + x.encode() for x in name.split(".")) + b"\x00"
+    labels = b"".join(bytes([len(x)]) + x.encode() for x in parts) + b"\x00"
     return header + labels + struct.pack(">HH", 1, 1)  # QTYPE A, QCLASS IN
 
 
