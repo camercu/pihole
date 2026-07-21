@@ -3,6 +3,7 @@
 Description=Pi-hole backup (Teleporter export -> restic)
 After=network-online.target pihole-FTL.service
 Wants=network-online.target
+OnFailure=notify-failure@%n.service
 
 [Service]
 Type=oneshot
