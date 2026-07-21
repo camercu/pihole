@@ -36,6 +36,7 @@ MANAGED = "managed by ansible"
 _ROOT = Path(__file__).resolve().parents[2]
 SYNC_SCRIPT = _ROOT / "ansible/roles/pihole/files/pihole_sync_lists.py"
 BACKUP_SCRIPT = _ROOT / "ansible/roles/backup/files/pihole_backup.py"
+SMOKE_SCRIPT = _ROOT / "ansible/roles/verify/files/pihole_smoke.py"
 
 
 def _detect_runtime():
@@ -106,6 +107,12 @@ class Api:
         st, j = self._call("POST", "/auth", {"password": password})
         assert st == 200, f"auth failed: {st} {j}"
         return j["session"]["sid"]
+
+    def logout(self):
+        """Release this client's session seat (FTL's pool is small)."""
+        if self.sid:
+            self._call("DELETE", "/auth")
+            self.sid = None
 
     def get(self, path):
         st, j = self._call("GET", path)
@@ -239,7 +246,8 @@ def pihole(_containers):
     api = Api(_containers, PASSWORD)
     api.wait_writable()  # absorb any gravity DB-swap left by a prior test
     api.reset_managed()
-    return SimpleEnv(base=_containers, api=api, sidecar=Sidecar())
+    yield SimpleEnv(base=_containers, api=api, sidecar=Sidecar())
+    api.logout()  # don't leak the session seat between tests
 
 
 class SimpleEnv:
@@ -267,3 +275,24 @@ class SimpleEnv:
         return subprocess.run(
             ["python", str(BACKUP_SCRIPT)], env=env, text=True,
             capture_output=True)
+
+    def run_smoke_in_net(self, extra_env=None):
+        """Run the smoke script *inside* the container network.
+
+        DNS is queried over UDP, which host->container port forwarding handles
+        unreliably on some runtimes; running from the sidecar (same network as
+        Pi-hole) keeps the check reliable everywhere. Defaults point at the
+        Pi-hole container by name; callers override the probe domains.
+        """
+        subprocess.run([RUNTIME, "cp", str(SMOKE_SCRIPT),
+                        f"{FILES_CT}:/tmp/pihole_smoke.py"],
+                       check=True, capture_output=True)
+        env = {"PIHOLE_API": f"http://{PIHOLE_CT}/api",
+               "PIHOLE_PASSWORD": PASSWORD,
+               "SMOKE_DNS_HOST": PIHOLE_CT,
+               "SMOKE_DNS_PORT": "53",
+               **(extra_env or {})}
+        eflags = [x for k, v in env.items() for x in ("-e", f"{k}={v}")]
+        return subprocess.run(
+            [RUNTIME, "exec", *eflags, FILES_CT, "python3",
+             "/tmp/pihole_smoke.py"], text=True, capture_output=True)

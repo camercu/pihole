@@ -289,6 +289,16 @@ def login():
     return j["session"]["sid"]
 
 
+def logout(sid):
+    """Release the API session so its seat is freed immediately, not in 30 min.
+
+    FTL has a small pool of session seats; a script that logs in every run and
+    never logs out can exhaust them (overlapping timers, rapid re-runs).
+    """
+    if sid:
+        api("DELETE", "/auth", sid)
+
+
 def read_path(path):
     """Cleaned lines of a config file, or [] if it doesn't exist."""
     if not os.path.exists(path):
@@ -465,47 +475,49 @@ def reconcile_groups(sid, desired_names):
 
 def main():
     sid = login()
+    try:
+        groups = discover_groups(GROUPS_DIR)
+        name_to_id = reconcile_groups(sid, [name for name, _ in groups])
 
-    groups = discover_groups(GROUPS_DIR)
-    name_to_id = reconcile_groups(sid, [name for name, _ in groups])
+        # Allowlists apply network-wide (default group only).
+        allow_exact, allow_regex = split_allow(read_file("allow.list"))
+        for url in read_file("allowlist-urls.txt"):
+            allow_exact += fetch_domains(url)
+        # allow_exact draws on remote lists; only remove exact entries if every
+        # source loaded (fetch_ok). Regex doesn't fetch, so removal is always safe.
+        reconcile(sid, allow_kind("exact"), allow_exact, allow_remove=fetch_ok)
+        reconcile(sid, allow_kind("regex"), allow_regex)
 
-    # Allowlists apply network-wide (default group only).
-    allow_exact, allow_regex = split_allow(read_file("allow.list"))
-    for url in read_file("allowlist-urls.txt"):
-        allow_exact += fetch_domains(url)
-    # allow_exact draws on remote lists; only remove exact entries if every
-    # source loaded (fetch_ok). Regex doesn't fetch, so removal is always safe.
-    reconcile(sid, allow_kind("exact"), allow_exact, allow_remove=fetch_ok)
-    reconcile(sid, allow_kind("regex"), allow_regex)
+        # Read each group's files, then assemble the desired group-scoped state (the
+        # product decisions live in assemble_desired, unit-tested). Block adlists span
+        # one namespace across groups, so all four maps reconcile via membership.
+        group_inputs = [
+            (name_to_id[name],
+             read_path(os.path.join(path, "adlists.txt")),
+             read_path(os.path.join(path, "block.list")),
+             read_path(os.path.join(path, "clients.txt")))
+            for name, path in groups
+        ]
+        desired = assemble_desired(read_file("adlists.txt"), group_inputs)
+        reconcile_membership(sid, ADLIST, desired["adlists"])
+        reconcile_membership(sid, deny_kind("exact"), desired["deny_exact"])
+        reconcile_membership(sid, deny_kind("regex"), desired["deny_regex"])
+        reconcile_membership(sid, CLIENT, desired["clients"])
 
-    # Read each group's files, then assemble the desired group-scoped state (the
-    # product decisions live in assemble_desired, unit-tested). Block adlists span
-    # one namespace across groups, so all four maps reconcile via membership.
-    group_inputs = [
-        (name_to_id[name],
-         read_path(os.path.join(path, "adlists.txt")),
-         read_path(os.path.join(path, "block.list")),
-         read_path(os.path.join(path, "clients.txt")))
-        for name, path in groups
-    ]
-    desired = assemble_desired(read_file("adlists.txt"), group_inputs)
-    reconcile_membership(sid, ADLIST, desired["adlists"])
-    reconcile_membership(sid, deny_kind("exact"), desired["deny_exact"])
-    reconcile_membership(sid, deny_kind("regex"), desired["deny_regex"])
-    reconcile_membership(sid, CLIENT, desired["clients"])
+        # Apply: gravity re-fetches adlists (needed for adlist changes); a plain DNS
+        # restart is enough to pick up domain-, group-, and client-list changes.
+        if changed["adlists"]:
+            print("Rebuilding gravity...")
+            st, _ = api("POST", "/action/gravity", sid)
+            if st != 200:
+                die(f"gravity rebuild failed (HTTP {st})")
+        elif any(changed.values()):
+            print("Reloading DNS...")
+            api("POST", "/action/restartdns", sid)
 
-    # Apply: gravity re-fetches adlists (needed for adlist changes); a plain DNS
-    # restart is enough to pick up domain-, group-, and client-list changes.
-    if changed["adlists"]:
-        print("Rebuilding gravity...")
-        st, _ = api("POST", "/action/gravity", sid)
-        if st != 200:
-            die(f"gravity rebuild failed (HTTP {st})")
-    elif any(changed.values()):
-        print("Reloading DNS...")
-        api("POST", "/action/restartdns", sid)
-
-    print("CHANGED" if any(changed.values()) else "no changes")
+        print("CHANGED" if any(changed.values()) else "no changes")
+    finally:
+        logout(sid)
 
     # Everything appliable has been applied; fail loudly so a hand-added collision
     # isn't left silently unmanaged.
