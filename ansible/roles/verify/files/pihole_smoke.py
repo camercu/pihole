@@ -123,6 +123,12 @@ def dns_query(server, port, name, timeout=5):
 
 
 def _api(method, path, sid=None, body=None):
+    """Call the FTL API. Returns (status, json), or (None, {}) if the endpoint
+    is unreachable or answers with a non-2xx/garbled body.
+
+    Failing soft (rather than raising) is deliberate: the smoke test's job is to
+    turn a broken deploy into a readable FAIL line, so an API that is down or
+    rejecting our credentials must degrade to a failed check, not a traceback."""
     url = API + path
     if sid:
         url += ("&" if "?" in url else "?") + "sid=" + sid
@@ -130,16 +136,25 @@ def _api(method, path, sid=None, body=None):
     req = urllib.request.Request(
         url, data=data, method=method,
         headers={"Content-Type": "application/json", "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=15) as r:
-        raw = r.read()
-        return r.status, (json.loads(raw) if raw else {})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            raw = r.read()
+            return r.status, (json.loads(raw) if raw else {})
+    except (OSError, ValueError):  # URLError/HTTPError (down, 401) or bad JSON
+        return None, {}
 
 
 def login():
+    """API session id, or None if auth isn't possible (no password set, API
+    down, or wrong password). None means "unauthenticated"; the checks below
+    then fail loudly against a real box rather than crashing here."""
     if not PW:
         return None
     _, j = _api("POST", "/auth", body={"password": PW})
-    return j["session"]["sid"]
+    try:
+        return j["session"]["sid"]
+    except (KeyError, TypeError):
+        return None
 
 
 def logout(sid):
@@ -157,6 +172,12 @@ def main():
     unbound_port = os.environ.get("SMOKE_UNBOUND_PORT")
 
     checks = []  # (ok, label)
+
+    if PW and sid is None:
+        # A password was configured but we hold no session: API unreachable or
+        # the password is wrong. Name it so the operator isn't left guessing why
+        # every API check "got None".
+        checks.append((False, "API login (failed — API unreachable or wrong password)"))
 
     _, blk = _api("GET", "/dns/blocking", sid)
     checks.append((blk.get("blocking") == "enabled",

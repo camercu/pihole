@@ -80,6 +80,37 @@ def test_classify_blocked_false_for_a_real_address():
     assert s.classify_blocked(["93.184.216.34"]) is False
 
 
+def test_api_returns_none_status_when_the_endpoint_is_unreachable(monkeypatch):
+    # A down FTL API (URLError) must not crash the smoke run with a traceback;
+    # _api reports it as "no status" so the caller can emit a FAIL line.
+    import urllib.error
+
+    def boom(*a, **k):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    assert s._api("GET", "/dns/blocking") == (None, {})
+
+
+def test_login_returns_none_when_the_api_is_unreachable(monkeypatch):
+    import urllib.error
+
+    def boom(*a, **k):
+        raise urllib.error.URLError("connection refused")
+
+    monkeypatch.setattr(s, "PW", "secret")
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    assert s.login() is None
+
+
+def test_login_returns_none_on_an_unexpected_response_body(monkeypatch):
+    # Wrong password / unexpected shape: no session in the body => no sid,
+    # not a KeyError that aborts before any check prints.
+    monkeypatch.setattr(s, "PW", "secret")
+    monkeypatch.setattr(s, "_api", lambda *a, **k: (200, {}))
+    assert s.login() is None
+
+
 def test_is_blocked_empty_answer_is_blocked():
     assert s.is_blocked([]) is True
 
