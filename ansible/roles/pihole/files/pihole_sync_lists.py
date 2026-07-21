@@ -281,6 +281,13 @@ def die(msg):
 
 
 def login():
+    """API session id (or None if unauthenticated).
+
+    Contract: FAIL HARD. This script mutates managed state, so bad auth must
+    stop the run loudly rather than silently reconcile against nothing. Kept
+    deliberately separate from backup/smoke's login(), which have their own
+    error contracts (raise / soft-None) suited to their jobs.
+    """
     if not PW:
         return None  # no password set => API accepts unauthenticated calls
     st, j = api("POST", "/auth", body={"password": PW})

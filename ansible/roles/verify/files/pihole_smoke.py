@@ -9,7 +9,9 @@ check fails, so it drops straight into `verify.yml` or a shell.
 
 Environment:
   PIHOLE_API           API base (default http://localhost/api)
-  PIHOLE_PASSWORD      admin/API password ('' => no auth)
+  PIHOLE_PASSWORD      admin/API password ('' => no auth). A wrong password or
+                       an unreachable API is reported as a FAIL line, not a
+                       crash — the run still prints every check and exits 1.
   SMOKE_DNS_HOST       resolver to query   (default 127.0.0.1)
   SMOKE_DNS_PORT       resolver port       (default 53)
   SMOKE_RESOLVE_DOMAIN domain that must resolve      (default example.com)
@@ -147,7 +149,12 @@ def _api(method, path, sid=None, body=None):
 def login():
     """API session id, or None if auth isn't possible (no password set, API
     down, or wrong password). None means "unauthenticated"; the checks below
-    then fail loudly against a real box rather than crashing here."""
+    then fail loudly against a real box rather than crashing here.
+
+    Contract: SOFT — never raises. A health check exists to turn every failure
+    (incl. bad auth) into a readable FAIL line, so it degrades where sync's
+    login() die()s and backup's login() raises. The three are intentionally
+    not shared: the divergent error policy is the point."""
     if not PW:
         return None
     _, j = _api("POST", "/auth", body={"password": PW})

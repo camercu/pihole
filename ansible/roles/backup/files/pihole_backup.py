@@ -24,6 +24,13 @@ STAGING = os.environ.get("BACKUP_STAGING", "/var/backups/pihole")
 
 
 def login():
+    """API session id (or "" if unauthenticated).
+
+    Contract: LET IT RAISE. A backup that can't reach or authenticate to the
+    API must fail the systemd unit so the OnFailure= notifier fires — a silent
+    skipped backup is worse than a loud one. Kept deliberately separate from
+    sync/smoke's login() (die-hard / soft-None), which suit their own jobs.
+    """
     if not PW:
         return ""  # no password set => API accepts unauthenticated calls
     req = urllib.request.Request(
