@@ -1,9 +1,12 @@
 {# Managed by Ansible (roles/alerting). #}
 [Unit]
-Description=Report failure of %I
+Description=Report failure of %i
 
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/pihole-alerting/env
-# %I is the unescaped name of the unit that failed (passed via OnFailure=%n).
-ExecStart=/usr/local/bin/notify-failure.py %I
+# %i is the failed unit's name verbatim (passed via OnFailure=%n). NOT %I:
+# %I unescapes the instance, turning every '-' into '/', so
+# pihole-backup.service would arrive as pihole/backup.service and
+# `journalctl -u` would match nothing — the report would carry no logs.
+ExecStart=/usr/local/bin/notify-failure.py %i
