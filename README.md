@@ -1,5 +1,7 @@
 # Pi-hole + Unbound, as code
 
+[![CI](https://github.com/camercu/pihole/actions/workflows/ci.yml/badge.svg)](https://github.com/camercu/pihole/actions/workflows/ci.yml)
+
 Infrastructure-as-code for a single Raspberry Pi running **Pi-hole** (DNS ad
 blocking) in front of **Unbound** (an encrypted DNS-over-TLS forwarder). The
 whole box is described declaratively so it can be rebuilt from a fresh SD card
@@ -33,11 +35,13 @@ client → Pi-hole (:53, blocklists) → Unbound (:5335, DoT cache) → upstream
 ## Layout
 
 ```
-shell.nix / .envrc          # nix dev env: ansible + ansible-lint (+ sshpass)
+shell.nix / .envrc          # nix dev env: ansible, ansible-lint, ruff, pytest, restic
+justfile                    # task runner: `just lint`, `just test`, `just test-full`
 ansible/
   ansible.cfg
   inventory.yml             # the Pi: host, ssh user
-  site.yml                  # runs the six roles in order
+  site.yml                  # runs the roles in order
+  verify.yml                # post-deploy smoke test (run against the live host)
   group_vars/all/
     defaults.yml            # generic per-site facts (overridden by local.yml)
     main.yml                # cross-role interface: unbound endpoint, password
@@ -47,9 +51,13 @@ ansible/
     common/                 # hostname, locale, timezone, packages, /etc/hosts, ssh keys
     unbound/                # install + config templates, root hints, SafeSearch
     pihole/                 # unattended install, upstream→unbound, adlists/allowlists
+    alerting/               # OnFailure= notifier for the scheduled jobs
     maintenance/            # gravity/root-hints/pihole refresh, reboot, unattended-upgrades
     backup/                 # weekly Teleporter export -> restic on the NAS (opt-in)
     hardening/              # firewall, drop unused services, force HTTPS admin, no root SSH
+    verify/                 # smoke checks: DNS resolves + blocks, unbound, admin UI
+tests/                      # pytest: fast unit tests + opt-in real-container integration
+  integration/              # end-to-end tests against a real Pi-hole in docker/podman
 ```
 
 ## Quick start (one command)
@@ -111,10 +119,25 @@ nix-shell --run 'cd ansible && ansible-lint'
 
 # Safety nets — lint helper scripts, run their unit tests, lint playbooks:
 nix-shell --run 'just lint'                     # ruff + ansible-lint
-nix-shell --run 'pytest -q'
-nix-shell --run 'pre-commit run --all-files'   # all of the above at once
+nix-shell --run 'just test'                     # fast unit tests
+nix-shell --run 'just test-full'                # + real-container integration tests
+nix-shell --run 'pre-commit run --all-files'   # lint + unit tests at once
 nix-shell --run 'pre-commit install'           # run them on every git commit
 ```
+
+## Tests
+
+Two layers, both run in [CI](.github/workflows/ci.yml) on every push:
+
+- **Unit tests** cover the pure decision logic in the helper scripts (list
+  diffing, group membership, DNS-packet parsing, restic argv). Fast, no
+  network: `just test`.
+- **Integration tests** start a **real Pi-hole v6 container** and drive the
+  *deployed* scripts against its live FTL API — proving the sync reconciler,
+  the backup export/restore round trip, and the smoke checker actually work
+  against Pi-hole, not a mock. They are opt-in (`PIHOLE_IT=1`) and need
+  **docker or podman** on `PATH`; `just test-full` runs them (auto-skipped by
+  `just test` when the runtime is absent).
 
 ## Changing configuration
 
@@ -226,6 +249,32 @@ flash → `./setup.sh` → import recovery.
 
 Run a backup on demand: `sudo systemctl start pihole-backup.service`.
 
+## Verifying a deploy
+
+A green `site.yml` run proves Ansible applied the config — not that DNS actually
+works. `verify.yml` checks the running box end-to-end and fails loudly if
+anything is wrong:
+
+```bash
+nix-shell --run 'cd ansible && ansible-playbook verify.yml'
+```
+
+It asserts that `pihole-FTL` and `unbound` are running, gravity is loaded and
+blocking is on, a normal domain resolves, a known ad domain is sinkholed,
+unbound answers directly on `:5335`, and the admin UI responds over HTTPS. The
+probe domains are overridable (`roles/verify/defaults/main.yml`). The same
+checks (`roles/verify/files/pihole_smoke.py`) are exercised against a real
+container in CI, so the logic is trusted.
+
+## Alerting
+
+The scheduled maintenance and backup jobs would otherwise fail silently. The
+`alerting` role wires an `OnFailure=` handler into each: a failed run is always
+logged to the journal, and — if you set a webhook — a report is pushed off-box.
+Point `alerting_webhook_url` (in `group_vars/all/local.yml`) at e.g. an
+[ntfy](https://ntfy.sh) topic; leave it empty for journal-only. If the URL
+embeds a token, put it in the vault instead.
+
 ## Security
 
 The `hardening` role applies host security that survives rebuilds — chosen for
@@ -251,3 +300,30 @@ DNS-over-TLS, and the admin password is set. Security patches are applied by
 `unattended-upgrades`.
 
 Change the allowed subnet via `hardening_lan_subnet` in `roles/hardening/defaults/main.yml`.
+
+## Troubleshooting
+
+- **`ansible-playbook` can't reach the Pi** — check `ansible_host`/`ansible_user`
+  in `local.yml`; `ssh <user>@<host>` should work first. After hardening flips
+  to key-only SSH, password auth is off (see **Security**).
+- **Vault decryption errors** — `ansible/.vault-pass` is missing or wrong; with
+  `direnv` it's auto-loaded, otherwise add `--ask-vault-pass`.
+- **`verify.yml` reports a failing check** — read the `[FAIL]` line. Gravity not
+  populated → run `--tags pihole` (or `pihole -g` on the box); a domain not
+  resolving → check unbound (`systemctl status unbound`, `unbound-checkconf`);
+  admin HTTPS down → check `pihole-FTL`.
+- **Sync exits non-zero with a collision warning** — a list entry was also added
+  by hand in the admin UI. Remove the hand-added copy so the role can manage it.
+- **A scheduled job failed** — `systemctl list-timers`, then
+  `journalctl -u maint-<job>.service` (or `pihole-backup.service`). With a
+  webhook configured you'll have been alerted (see **Alerting**).
+
+## Recovery from scratch
+
+A dead SD card is a non-event because the whole box is code:
+
+1. Flash Raspberry Pi OS Lite, enable SSH (Raspberry Pi Imager).
+2. `./setup.sh` — reprovisions everything from this repo.
+3. If backups were enabled, restore config: `restic restore latest --target
+   /tmp/restore`, then import the `.zip` (admin UI → Settings → Teleporter).
+4. `ansible-playbook verify.yml` to confirm the box is healthy.
