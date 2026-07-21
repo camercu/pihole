@@ -65,9 +65,36 @@ def parse_answers(resp):
     return addrs
 
 
+def parse_response(resp):
+    """Addresses in a DNS response, or None if the packet can't be parsed.
+
+    None means "no usable answer" (garbled/truncated datagram) and is kept
+    distinct from [] ("a valid response with an empty answer section"), because
+    only the latter is a legitimate NXDOMAIN-style block.
+    """
+    try:
+        return parse_answers(resp)
+    except (struct.error, IndexError):
+        return None
+
+
 def is_blocked(addrs):
     """A name is blocked when it resolves to nothing or only to 0.0.0.0."""
     return all(a == "0.0.0.0" for a in addrs)
+
+
+def classify_resolve(addrs):
+    """A domain resolves only when the resolver returned a real (non-sinkhole) A."""
+    return bool(addrs) and not is_blocked(addrs)
+
+
+def classify_blocked(addrs):
+    """A domain is blocked only when the resolver actually answered (not None)
+    and that answer is a sinkhole — 0.0.0.0 or an empty NXDOMAIN answer.
+
+    A None (timeout/socket error) is NOT a block: a dead resolver must never
+    read as "blocking works"."""
+    return addrs is not None and is_blocked(addrs)
 
 
 # ── I/O shell ───────────────────────────────────────────────────────────────
@@ -76,16 +103,23 @@ PW = os.environ.get("PIHOLE_PASSWORD", "")
 
 
 def dns_query(server, port, name, timeout=5):
-    """Resolve `name`'s A records via one UDP query; [] on timeout/error."""
+    """Resolve `name`'s A records via one UDP query.
+
+    Returns the list of A addresses (possibly empty for an NXDOMAIN answer),
+    or None if the resolver never gave a usable response (timeout, socket
+    error, unparseable packet). Callers must treat None as "unknown", not
+    "blocked" — see classify_blocked.
+    """
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.settimeout(timeout)
     try:
         sock.sendto(build_query(name), (server, int(port)))
-        return parse_answers(sock.recvfrom(4096)[0])
-    except (OSError, struct.error):
-        return []
+        resp = sock.recvfrom(4096)[0]
+    except OSError:
+        return None
     finally:
         sock.close()
+    return parse_response(resp)
 
 
 def _api(method, path, sid=None, body=None):
@@ -134,15 +168,16 @@ def main():
     logout(sid)  # remaining checks are DNS-only; free the seat now
 
     good = dns_query(dns_host, dns_port, resolve_domain)
-    checks.append((bool(good) and not is_blocked(good),
+    checks.append((classify_resolve(good),
                    f"{resolve_domain} resolves ({good or 'no answer'})"))
 
     bad = dns_query(dns_host, dns_port, blocked_domain)
-    checks.append((is_blocked(bad), f"{blocked_domain} blocked ({bad or 'no answer'})"))
+    checks.append((classify_blocked(bad),
+                   f"{blocked_domain} blocked ({bad or 'no answer'})"))
 
     if unbound_port:
         via_unbound = dns_query(dns_host, unbound_port, resolve_domain)
-        checks.append((bool(via_unbound),
+        checks.append((classify_resolve(via_unbound),
                        f"unbound answers on :{unbound_port} ({via_unbound or 'no answer'})"))
 
     for ok, label in checks:

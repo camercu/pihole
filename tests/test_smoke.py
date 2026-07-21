@@ -44,6 +44,42 @@ def test_parse_answers_no_answer_section_yields_empty():
     assert s.parse_answers(header + labels) == []
 
 
+def test_parse_response_returns_addresses_for_a_valid_packet():
+    assert s.parse_response(_response("a.com", "1.2.3.4")) == ["1.2.3.4"]
+
+
+def test_parse_response_returns_none_for_a_truncated_packet():
+    # A garbled/short datagram must not crash the smoke run; it means
+    # "no usable answer", distinct from an empty answer section.
+    assert s.parse_response(b"\x12\x34\x81\x80\x00") is None
+
+
+def test_classify_resolve_true_only_for_a_real_address():
+    assert s.classify_resolve(["1.2.3.4"]) is True
+    assert s.classify_resolve(["1.2.3.4", "0.0.0.0"]) is True
+
+
+def test_classify_resolve_false_for_no_answer_sinkhole_or_no_response():
+    assert s.classify_resolve([]) is False          # empty answer
+    assert s.classify_resolve(["0.0.0.0"]) is False  # sinkholed
+    assert s.classify_resolve(None) is False         # resolver gave no response
+
+
+def test_classify_blocked_true_for_sinkhole_or_empty_answer():
+    # Pi-hole blocks via 0.0.0.0 (NULL mode) or an empty answer (NXDOMAIN mode).
+    assert s.classify_blocked(["0.0.0.0"]) is True
+    assert s.classify_blocked([]) is True
+
+
+def test_classify_blocked_false_when_resolver_gave_no_response():
+    # None = timeout/socket error. A dead resolver must not read as "blocked".
+    assert s.classify_blocked(None) is False
+
+
+def test_classify_blocked_false_for_a_real_address():
+    assert s.classify_blocked(["93.184.216.34"]) is False
+
+
 def test_is_blocked_empty_answer_is_blocked():
     assert s.is_blocked([]) is True
 
