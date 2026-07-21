@@ -9,6 +9,15 @@ lint:
     ruff check .
     cd ansible && ansible-lint
 
+# Quick pre-commit gate: ruff lint + fast unit tests (`lint` adds ansible-lint).
+check:
+    ruff check .
+    just test
+
+# Auto-fix what ruff can (import order, simple lints), then report the rest.
+fix:
+    ruff check --fix .
+
 # Fast unit tests (end-to-end container tests skip unless PIHOLE_IT=1).
 test:
     pytest -q
