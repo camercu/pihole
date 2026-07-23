@@ -99,9 +99,25 @@ def classify_blocked(addrs):
     return addrs is not None and is_blocked(addrs)
 
 
+def resolve_password(env):
+    """API password from a file (PIHOLE_PASSWORD_FILE) or inline (PIHOLE_PASSWORD).
+
+    The file form keeps the secret out of the process environment and out of
+    Ansible's task output — a bare env var leaks at -vvv and lives in
+    /proc/<pid>/environ. A file path wins over the inline value; an empty path
+    (an unset Ansible var renders as "") counts as absent. Only the trailing
+    newline Ansible appends is stripped, so a password's own spaces survive.
+    """
+    path = env.get("PIHOLE_PASSWORD_FILE") or ""
+    if path:
+        with open(path, encoding="utf-8") as f:
+            return f.read().rstrip("\n")
+    return env.get("PIHOLE_PASSWORD", "")
+
+
 # ── I/O shell ───────────────────────────────────────────────────────────────
 API = os.environ.get("PIHOLE_API", "http://localhost/api")
-PW = os.environ.get("PIHOLE_PASSWORD", "")
+PW = resolve_password(os.environ)
 
 
 def dns_query(server, port, name, timeout=5):

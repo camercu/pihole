@@ -155,3 +155,29 @@ def test_is_blocked_all_zero_address_is_blocked():
 def test_is_blocked_real_address_is_not_blocked():
     assert s.is_blocked(["93.184.216.34"]) is False
     assert s.is_blocked(["0.0.0.0", "93.184.216.34"]) is False
+
+
+def test_resolve_password_reads_from_file(tmp_path):
+    f = tmp_path / "pw"
+    f.write_text("s3cret\n", encoding="utf-8")  # trailing newline from Ansible
+    assert s.resolve_password({"PIHOLE_PASSWORD_FILE": str(f)}) == "s3cret"
+
+
+def test_resolve_password_file_wins_over_inline(tmp_path):
+    f = tmp_path / "pw"
+    f.write_text("from-file", encoding="utf-8")
+    env = {"PIHOLE_PASSWORD_FILE": str(f), "PIHOLE_PASSWORD": "from-env"}
+    assert s.resolve_password(env) == "from-file"
+
+
+def test_resolve_password_falls_back_to_inline_env():
+    assert s.resolve_password({"PIHOLE_PASSWORD": "plain"}) == "plain"
+
+
+def test_resolve_password_empty_file_path_is_ignored():
+    env = {"PIHOLE_PASSWORD_FILE": "", "PIHOLE_PASSWORD": "plain"}
+    assert s.resolve_password(env) == "plain"
+
+
+def test_resolve_password_empty_when_unset():
+    assert s.resolve_password({}) == ""

@@ -223,3 +223,36 @@ def test_discover_groups_ignores_non_directories(tmp_path):
     (tmp_path / "kids").mkdir()
     _write(tmp_path / "README.txt", "not a group\n")
     assert [name for name, _ in s.discover_groups(str(tmp_path))] == ["kids"]
+
+
+def test_resolve_password_reads_from_file(tmp_path):
+    f = tmp_path / "pw"
+    _write(f, "s3cret\n")  # trailing newline as Ansible writes it
+    assert s.resolve_password({"PIHOLE_PASSWORD_FILE": str(f)}) == "s3cret"
+
+
+def test_resolve_password_file_wins_over_inline(tmp_path):
+    f = tmp_path / "pw"
+    _write(f, "from-file")
+    env = {"PIHOLE_PASSWORD_FILE": str(f), "PIHOLE_PASSWORD": "from-env"}
+    assert s.resolve_password(env) == "from-file"
+
+
+def test_resolve_password_falls_back_to_inline_env():
+    assert s.resolve_password({"PIHOLE_PASSWORD": "plain"}) == "plain"
+
+
+def test_resolve_password_empty_when_unset():
+    assert s.resolve_password({}) == ""
+
+
+def test_resolve_password_empty_file_path_is_ignored(tmp_path):
+    # An unset Ansible var renders PIHOLE_PASSWORD_FILE="" — treat as absent.
+    env = {"PIHOLE_PASSWORD_FILE": "", "PIHOLE_PASSWORD": "plain"}
+    assert s.resolve_password(env) == "plain"
+
+
+def test_resolve_password_preserves_inner_whitespace(tmp_path):
+    f = tmp_path / "pw"
+    _write(f, "a b\tc\n")  # only the trailing newline is stripped
+    assert s.resolve_password({"PIHOLE_PASSWORD_FILE": str(f)}) == "a b\tc"
