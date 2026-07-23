@@ -23,12 +23,33 @@
     group: root
     mode: "0755"
 
+# The API password goes to a root-only file, not the smoke run's environment: a
+# bare env var leaks in Ansible output at -vvv and in /proc/<pid>/environ. This
+# task ships no secret, so it needs no no_log and its PASS/FAIL lines stay
+# visible on failure — which is the whole point of the smoke test.
+- name: Create secrets directory
+  ansible.builtin.file:
+    path: /etc/pihole-secrets
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Write API password to a root-only file
+  ansible.builtin.copy:
+    content: "{{ pihole_web_password | default('') }}"
+    dest: /etc/pihole-secrets/api-password
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true # the password itself
+
 - name: Run the smoke checks (DNS + blocking + gravity + unbound)
   ansible.builtin.command:
     cmd: /usr/local/bin/pihole-smoke.py
   environment:
     PIHOLE_API: http://localhost/api
-    PIHOLE_PASSWORD: "{{ pihole_web_password | default('') }}"
+    PIHOLE_PASSWORD_FILE: /etc/pihole-secrets/api-password
     SMOKE_RESOLVE_DOMAIN: "{{ verify_resolve_domain }}"
     SMOKE_BLOCKED_DOMAIN: "{{ verify_blocked_domain }}"
     SMOKE_UNBOUND_PORT: "{{ verify_unbound_port }}"

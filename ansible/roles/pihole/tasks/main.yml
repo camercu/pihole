@@ -113,18 +113,41 @@
     group: root
     mode: "0755"
 
+# The API password goes to a root-only file, not the reconciler's environment.
+# Passing it via environment: would leak it in Ansible output at -vvv and in
+# /proc/<pid>/environ, and forces no_log on the run — which hid the reconcile's
+# own errors. A file keeps the secret out of both, so the run below needs no
+# no_log and its diagnostics stay visible.
+- name: Create secrets directory
+  ansible.builtin.file:
+    path: /etc/pihole-secrets
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Write API password to a root-only file
+  ansible.builtin.copy:
+    content: "{{ pihole_web_password }}"
+    dest: /etc/pihole-secrets/api-password
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true # the password itself
+
 # Reconciles adlists/allowlists into Pi-hole via the FTL REST API (adds missing,
 # removes ours no longer in config), then rebuilds gravity only if adlists
-# changed. Idempotent: prints CHANGED only when it altered something.
+# changed. Idempotent: prints CHANGED only when it altered something. No secret
+# in this task (password read from the file above), so no no_log — the run's
+# CHANGED/error output stays visible.
 - name: Reconcile Pi-hole lists via API
   ansible.builtin.command:
     cmd: /usr/local/bin/pihole-sync-lists.py
   environment:
-    PIHOLE_PASSWORD: "{{ pihole_web_password }}"
+    PIHOLE_PASSWORD_FILE: /etc/pihole-secrets/api-password
     PIHOLE_DIR: /etc/pihole/managed
   register: pihole_sync
   changed_when: "'CHANGED' in pihole_sync.stdout"
-  no_log: true # PIHOLE_PASSWORD in the environment
 
 - name: Enable and start Pi-hole FTL
   ansible.builtin.systemd_service:
