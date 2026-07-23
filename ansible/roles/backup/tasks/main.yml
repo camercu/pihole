@@ -35,25 +35,37 @@
         group: root
         mode: "0755"
 
+    # restic reads the password from RESTIC_PASSWORD_FILE natively. Passing it as
+    # RESTIC_PASSWORD inline forced no_log on the two tasks below, censoring the
+    # repo-init errors (unreachable NAS, wrong password) they exist to surface.
+    # The repository URL is not secret, so it stays inline; only the password
+    # moves to a root-only file, letting these tasks run without no_log.
+    - name: Write restic password to a root-only file
+      ansible.builtin.copy:
+        content: "{{ backup_restic_password }}"
+        dest: /etc/pihole-backup/restic-password
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true # the password itself
+
     - name: Initialise restic repository if absent
       ansible.builtin.command:
         cmd: restic cat config
       environment:
         RESTIC_REPOSITORY: "{{ backup_restic_repository }}"
-        RESTIC_PASSWORD: "{{ backup_restic_password }}"
+        RESTIC_PASSWORD_FILE: /etc/pihole-backup/restic-password
       register: backup_restic_check
       changed_when: false
       failed_when: false
-      no_log: true
 
     - name: Create restic repository
       ansible.builtin.command:
         cmd: restic init
       environment:
         RESTIC_REPOSITORY: "{{ backup_restic_repository }}"
-        RESTIC_PASSWORD: "{{ backup_restic_password }}"
+        RESTIC_PASSWORD_FILE: /etc/pihole-backup/restic-password
       when: backup_restic_check.rc != 0
-      no_log: true
       changed_when: true
 
     - name: Deploy backup service and timer
