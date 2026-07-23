@@ -11,12 +11,20 @@
     path: /usr/local/bin/pihole
   register: pihole_bin
 
-- name: Ensure /etc/pihole exists
+# FTL runs as user 'pihole' and mutates gravity.db through the API (groups,
+# clients, adlists). For each write SQLite must create a rollback journal *in
+# this directory*, so /etc/pihole itself — not just the .db file — has to be
+# owned by pihole, or every API write fails "attempt to write a readonly
+# database". On a fresh box the 'pihole' user doesn't exist until the installer
+# runs below, so bootstrap root-owned (enough to pre-seed setupVars); the
+# installer then hands ownership to pihole. On an existing box this asserts
+# pihole ownership every run, repairing a box an earlier root:root run clobbered.
+- name: Ensure /etc/pihole exists and is FTL-writable
   ansible.builtin.file:
     path: /etc/pihole
     state: directory
-    owner: root
-    group: root
+    owner: "{{ 'pihole' if pihole_bin.stat.exists else 'root' }}"
+    group: "{{ 'pihole' if pihole_bin.stat.exists else 'root' }}"
     mode: "0755"
 
 - name: Pre-seed setupVars for unattended install
