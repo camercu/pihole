@@ -22,11 +22,14 @@ second definition of "managed" could drift out of agreement with the first.
 Structure: plan_harvest and the helpers below are pure and unit-tested;
 everything touching the network or filesystem is the thin shell beneath them.
 """
+import argparse
+import json
 import os
 import sys
 from typing import NamedTuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pihole_sync_lists as sync  # noqa: E402
 from pihole_sync_lists import (  # noqa: E402
     DEFAULT_GROUP,
     MANAGED,
@@ -72,10 +75,14 @@ def _paths_for(kind, gids, id_to_name):
         return ["allow.list"], None
 
     if kind.startswith("deny/"):
+        if in_default and named:
+            return [], ("this blocks network-wide as well as for "
+                        + ", ".join(named) + ", and the config blocks domains per "
+                        "group; recording it would stop blocking it for everyone else")
         if in_default:
-            return [], ("the config blocks domains per group, and this one also "
-                        "blocks network-wide; recording it would stop blocking it "
-                        "for everyone outside " + (", ".join(named) or "any group"))
+            return [], ("the config blocks domains per group and has no "
+                        "network-wide blocklist; add the domain to each group that "
+                        "should block it, or leave it to the adlists")
         return [f"groups/{n}/block.list" for n in named], None
 
     if not in_default:
@@ -150,3 +157,116 @@ def merge_lines(existing, new_lines):
         return None
     prefix = existing if not existing or existing.endswith("\n") else existing + "\n"
     return prefix + "".join(ln + "\n" for ln in add)
+
+
+# ── I/O shell ───────────────────────────────────────────────────────────────
+# Each API collection is keyed in the response by the same name we store it
+# under, so one table drives both the fetch and the shape plan_harvest reads.
+COLLECTIONS = (("groups", "/groups"), ("lists", "/lists?type=block"),
+               ("domains", "/domains"), ("clients", "/clients"))
+
+
+def export_state():
+    """Live FTL state as the four raw API collections.
+
+    Exporting raw state rather than a finished plan keeps the routing rules on
+    the controller, in the repo: changing how an entry is captured is then a
+    repo edit, not a redeploy of the box's copy of this script. It also gives
+    the drift check the managed entries, which a plan drops.
+    """
+    sid = sync.login()
+    try:
+        state = {}
+        for key, path in COLLECTIONS:
+            st, body = sync.api("GET", path, sid)
+            if st != 200:
+                sync.die(f"GET {path} failed (HTTP {st}): {body}")
+            state[key] = body.get(key, [])
+        return state
+    finally:
+        sync.logout(sid)
+
+
+def read_state(source):
+    """Exported state from a file, or from stdin when source is '-'."""
+    if source == "-":
+        return json.load(sys.stdin)
+    with open(source, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def apply_plan(root, plan):
+    """Write the plan into the config tree at root; return the paths changed.
+
+    A file is only rewritten when merging actually adds something, so a harvest
+    with nothing new to record leaves the tree untouched.
+    """
+    written = []
+    for path in sorted(plan.files):
+        full = os.path.join(root, path)
+        existing = ""
+        if os.path.exists(full):
+            with open(full, encoding="utf-8") as f:
+                existing = f.read()
+        merged = merge_lines(existing, plan.files[path])
+        if merged is None:
+            continue
+        os.makedirs(os.path.dirname(full), exist_ok=True)
+        with open(full, "w", encoding="utf-8") as f:
+            f.write(merged)
+        written.append(path)
+    return written
+
+
+def report(root, plan, written):
+    """Print what was captured and what needs a human decision.
+
+    Returns the exit status: non-zero while anything is left unrecorded, so an
+    entry the config cannot express is noticed rather than quietly lost at the
+    next rebuild.
+    """
+    for path in written:
+        print(f"  ~ {path}")
+
+    for label, reason in plan.unroutable:
+        print(f"WARN: {label} was not captured: {reason}.", file=sys.stderr)
+
+    # A group with no entries has no file to write, and git does not track an
+    # empty directory — so name it instead of leaving a directory git will drop.
+    empty = [n for n in plan.group_dirs
+             if not os.path.isdir(os.path.join(root, "groups", n))]
+    for name in empty:
+        print(f"WARN: group {name!r} exists in Pi-hole but has no config; add "
+              f"groups/{name}/ with a block.list and clients.txt to manage it.",
+              file=sys.stderr)
+
+    print("CHANGED" if written else "no changes")
+    outstanding = len(plan.unroutable) + len(empty)
+    if outstanding:
+        print(f"ERROR: {outstanding} item(s) still unrecorded (see warnings above)",
+              file=sys.stderr)
+    return 1 if outstanding else 0
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--export", action="store_true",
+                      help="print live Pi-hole state as JSON (run on the Pi-hole host)")
+    mode.add_argument("--merge", metavar="STATE",
+                      help="capture the state in this JSON file ('-' for stdin) "
+                           "into the config files under --dir")
+    parser.add_argument("--dir", default=".", metavar="DIR",
+                        help="config root to write into (default: current directory)")
+    args = parser.parse_args(argv)
+
+    if args.export:
+        json.dump(export_state(), sys.stdout)
+        print()
+        return 0
+    plan = plan_harvest(read_state(args.merge))
+    return report(args.dir, plan, apply_plan(args.dir, plan))
+
+
+if __name__ == "__main__":
+    sys.exit(main())

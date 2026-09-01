@@ -113,6 +113,15 @@ def test_deny_domain_in_default_group_is_reported_not_silently_narrowed():
     assert [item for item, _ in plan.unroutable] == ["deny/exact bad.example"]
 
 
+def test_deny_domain_blocked_network_wide_only_says_so():
+    # No group to name: the config simply has no network-wide blocklist, and
+    # the reason has to say that rather than trail off.
+    state = _state(domains=[_domain("bad.example", "deny", "exact", [0])])
+    plan = h.plan_harvest(state)
+    assert plan.files == {}
+    assert "no network-wide blocklist" in plan.unroutable[0][1]
+
+
 def test_deny_domain_spanning_two_groups_is_written_to_both():
     state = _state(domains=[_domain("bad.example", "deny", "regex", [2, 3])])
     assert h.plan_harvest(state).files == {
