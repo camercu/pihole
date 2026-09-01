@@ -187,3 +187,46 @@ def test_lines_within_a_file_are_sorted_and_deduped():
                           _adlist("https://b.example/l.txt", [0])])
     assert h.plan_harvest(state).files["adlists.txt"] == [
         "https://a.example/l.txt", "https://b.example/l.txt"]
+
+
+# ── merging harvested lines into an existing config file ────────────────────
+def test_merge_appends_a_new_entry_to_an_existing_file():
+    assert h.merge_lines("a.example\n", ["b.example"]) == "a.example\nb.example\n"
+
+
+def test_merge_into_an_absent_or_empty_file_writes_just_the_entries():
+    assert h.merge_lines("", ["a.example"]) == "a.example\n"
+
+
+def test_merge_preserves_comments_and_blank_lines_verbatim():
+    existing = "# Blocklists.\n\nhttps://a.example/l.txt\n"
+    assert h.merge_lines(existing, ["https://b.example/l.txt"]) == (
+        "# Blocklists.\n\nhttps://a.example/l.txt\nhttps://b.example/l.txt\n")
+
+
+def test_merge_is_a_no_op_when_every_entry_is_already_present():
+    # Rewriting an unchanged file would show up as noise in `git diff`.
+    assert h.merge_lines("a.example\n", ["a.example"]) is None
+
+
+def test_merge_skips_entries_already_present_and_appends_the_rest():
+    assert h.merge_lines("a.example\n", ["a.example", "b.example"]) == (
+        "a.example\nb.example\n")
+
+
+def test_merge_ignores_trailing_comments_when_deciding_presence():
+    assert h.merge_lines("a.example # ours\n", ["a.example"]) is None
+
+
+def test_merge_appends_an_entry_that_exists_only_as_a_commented_example():
+    # clients.txt ships its examples commented out; a device really added in
+    # the UI has to become a live line, not stay an example.
+    assert h.merge_lines("# 10.0.0.5\n", ["10.0.0.5"]) == "# 10.0.0.5\n10.0.0.5\n"
+
+
+def test_merge_adds_the_missing_newline_before_appending():
+    assert h.merge_lines("a.example", ["b.example"]) == "a.example\nb.example\n"
+
+
+def test_merge_dedupes_repeated_entries_in_one_call():
+    assert h.merge_lines("", ["a.example", "a.example"]) == "a.example\n"

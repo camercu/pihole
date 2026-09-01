@@ -27,7 +27,12 @@ import sys
 from typing import NamedTuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pihole_sync_lists import DEFAULT_GROUP, MANAGED, normalize_groups  # noqa: E402
+from pihole_sync_lists import (  # noqa: E402
+    DEFAULT_GROUP,
+    MANAGED,
+    clean_lines,
+    normalize_groups,
+)
 
 
 class Plan(NamedTuple):
@@ -126,3 +131,22 @@ def plan_harvest(state):
                 if g["id"] != DEFAULT_GROUP and g.get("comment") != MANAGED}
     return Plan(files={p: sorted(v) for p, v in files.items()},
                 group_dirs=sorted(touched), unroutable=unroutable)
+
+
+def merge_lines(existing, new_lines):
+    """Config file text with `new_lines` present, or None if it already was.
+
+    Existing content is kept byte for byte — comments carry the instructions a
+    person reads when editing the file by hand, and the file's own ordering is
+    theirs to choose — so entries append at the end. Presence is judged the way
+    the reconciler reads the file (clean_lines), which means a commented-out
+    example does not count as present: a device really added in the UI has to
+    become a live line. Returning None for an unchanged file keeps a harvest
+    that found nothing out of `git diff`.
+    """
+    present = set(clean_lines(existing))
+    add = [ln for ln in dict.fromkeys(new_lines) if ln not in present]
+    if not add:
+        return None
+    prefix = existing if not existing or existing.endswith("\n") else existing + "\n"
+    return prefix + "".join(ln + "\n" for ln in add)
