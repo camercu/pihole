@@ -214,6 +214,12 @@ A harvested entry still carries its hand-added comment on the box, so the next
 config file has it: the reconciler then adds it back as managed and owns it from
 there.
 
+`verify.yml` runs the same comparison and fails when the box carries a setting
+no config file records — so drift surfaces on a routine health check rather than
+on the day the SD card dies. Settings the config format cannot express are
+reported there but don't fail it: a check that stays red for something with no
+fix is one people learn to ignore.
+
 ## Secrets (Ansible Vault)
 
 `./setup.sh` creates these for you; this section is for editing them later.
@@ -339,6 +345,9 @@ Change the allowed subnet via `hardening_lan_subnet` in `roles/hardening/default
   admin HTTPS down → check `pihole-FTL`.
 - **Sync exits non-zero with a collision warning** — a list entry was also added
   by hand in the admin UI. Remove the hand-added copy so the role can manage it.
+- **`verify.yml` reports drift** — Pi-hole carries settings no config file
+  records. `just harvest` writes them into the files; review with `git diff`
+  and commit.
 - **A scheduled job failed** — `systemctl list-timers`, then
   `journalctl -u maint-<job>.service` (or `pihole-backup.service`). With a
   webhook configured you'll have been alerted (see **Alerting**).

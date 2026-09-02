@@ -2,10 +2,54 @@
 # Post-deploy health check. Run after site.yml, against the live host:
 #   nix-shell --run 'ansible-playbook verify.yml'
 # Fails loudly if DNS isn't resolving, gravity/blocking is off, a known ad
-# domain isn't sinkholed, unbound isn't answering, or the admin UI is down.
+# domain isn't sinkholed, unbound isn't answering, the admin UI is down, or the
+# box carries settings no config file records.
 - name: Verify Pi-hole host health
   hosts: pihole
   become: true
   roles:
     - role: verify
       tags: [verify]
+
+  tasks:
+    # Health is about the box working; this is about the box being described.
+    # A setting added by hand in the admin UI keeps working until the SD card
+    # dies, which is exactly when nobody is in a position to notice it was
+    # never written down — so the check runs on every verify.
+    - name: Export live Pi-hole state
+      ansible.builtin.command:
+        cmd: /usr/local/bin/pihole_harvest.py --export
+      environment:
+        PIHOLE_PASSWORD_FILE: /etc/pihole-secrets/api-password
+      register: pihole_state
+      changed_when: false
+      tags: [verify, drift]
+
+    - name: Check the config files against live state
+      ansible.builtin.command:
+        cmd: >-
+          {{ playbook_dir }}/roles/pihole/files/pihole_harvest.py
+          --check - --dir {{ playbook_dir }}/roles/pihole/files
+        stdin: "{{ pihole_state.stdout }}"
+      delegate_to: localhost
+      become: false
+      register: pihole_drift
+      changed_when: false
+      failed_when: false
+      tags: [verify, drift]
+
+    - name: Show the drift report
+      ansible.builtin.debug:
+        msg: "{{ (pihole_drift.stdout_lines + pihole_drift.stderr_lines) | select | list }}"
+      tags: [verify, drift]
+
+    # Only capturable drift fails: a setting the config format cannot express
+    # has no fix to apply, and a check that stays red for something unfixable
+    # is one people learn to ignore.
+    - name: Fail when settings exist that no config file records
+      ansible.builtin.fail:
+        msg: >-
+          Pi-hole carries settings this repo does not record. Run
+          `just harvest`, review the diff, and commit.
+      when: "'DRIFT' in pihole_drift.stdout"
+      tags: [verify, drift]
