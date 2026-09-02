@@ -43,6 +43,7 @@ ansible/
   site.yml                  # runs the roles in order
   verify.yml                # post-deploy smoke test (run against the live host)
   harvest.yml               # capture changes made in the admin UI back into the files
+  adopt.yml                 # hand captured entries over to the reconciler
   group_vars/all/
     defaults.yml            # generic per-site facts (overridden by local.yml)
     main.yml                # cross-role interface: unbound endpoint, password
@@ -111,8 +112,10 @@ nix-shell --run 'cd ansible && ansible-playbook site.yml'
 # Preview without changing anything:
 nix-shell --run 'cd ansible && ansible-playbook site.yml --check --diff'
 
-# Capture changes made by hand in the admin UI into the config files:
+# Capture changes made by hand in the admin UI into the config files,
+# then (after committing the diff) let the reconciler manage them:
 nix-shell --run 'just harvest'
+nix-shell --run 'just adopt'
 
 # One role only (tags: common, unbound, pihole, maintenance):
 nix-shell --run 'cd ansible && ansible-playbook site.yml --tags pihole'
@@ -209,10 +212,15 @@ group, a disabled row — and capturing those anyway would change what Pi-hole
 blocks, so harvest names each one with the reason and exits non-zero instead.
 Record those another way, or accept that a rebuild won't restore them.
 
-A harvested entry still carries its hand-added comment on the box, so the next
-`site.yml` run reports it as a collision. Delete it in the admin UI once the
-config file has it: the reconciler then adds it back as managed and owns it from
-there.
+A captured entry still carries its hand-added comment on the box, so the next
+`site.yml` run would report it as a collision. `just adopt` finishes the job:
+it hands every entry the config files now record over to the reconciler by
+rewriting that comment. Nothing is deleted or re-resolved — the row stays put
+and only changes hands — and an entry no file records is left alone, so adopting
+can't turn into a way to lose settings.
+
+The loop, then, is: change what you like in the admin UI, `just harvest`,
+review the diff and commit, `just adopt`.
 
 `verify.yml` runs the same comparison and fails when the box carries a setting
 no config file records — so drift surfaces on a routine health check rather than
