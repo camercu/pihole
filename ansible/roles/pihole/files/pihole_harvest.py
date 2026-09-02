@@ -45,9 +45,9 @@ class Plan(NamedTuple):
     files:      config path (relative to the config root) -> lines to ensure present
     group_dirs: group directories the config tree needs, sorted
     unroutable: (entry label, why the config format cannot express it)
-    routed:     (kind, entry, config paths) per captured entry — what adoption
-                needs, and what `files` alone cannot say, since two entries of
-                different kinds can share a name across different files
+    routed:     (kind, entry, config paths, group ids) per captured entry — what
+                adoption needs, and what `files` alone cannot say, since two
+                entries of different kinds can share a name across files
     """
     files: dict
     group_dirs: list
@@ -194,7 +194,7 @@ def plan_harvest(state):
             continue
         for path in paths:
             files.setdefault(path, set()).add(entry)
-        routed.append((kind, entry, sorted(paths)))
+        routed.append((kind, entry, sorted(paths), sorted(gids)))
         touched |= {id_to_name[g] for g in gids if g != DEFAULT_GROUP}
 
     # A group made by hand needs a directory too, even with nothing in it yet:
@@ -234,17 +234,37 @@ def merge_lines(existing, new_lines):
 
 
 def plan_adopt(routed, present):
-    """(kind, entry) pairs the reconciler can safely be given ownership of.
+    """(kind, entry, groups) the reconciler can safely be given ownership of.
 
     Adoption is what ends the collision a captured entry still causes: the row
     keeps its groups and its place in Pi-hole and only changes hands. The
     condition is that every config file the entry routed into already lists it —
     a half-recorded entry handed over would be reconciled down to what the files
     do say, silently narrowing its group set, or deleted outright when no file
-    asks for it at all.
+    asks for it at all. The group set travels with the decision so that whoever
+    carries it out can tell the entry has not moved since.
     """
-    return sorted((kind, entry) for kind, entry, paths in routed
+    return sorted((kind, entry, groups) for kind, entry, paths, groups in routed
                   if all(entry in present.get(path, ()) for path in paths))
+
+
+def adoptable_now(pairs, state):
+    """(kind, entry, row) for planned entries that live state still matches.
+
+    Deciding and doing are separated by a round trip, and the admin UI stays
+    open throughout. An entry regrouped in between no longer matches the config
+    files the decision was made from, so handing it over would narrow it exactly
+    as plan_adopt refuses to — and one already owned needs nothing done.
+    """
+    planned = {(kind, entry): sorted(groups) for kind, entry, groups in pairs}
+    ready = []
+    for kind, entry, row in _rows(state):
+        groups = planned.get((kind, entry))
+        if groups is None or row.get("comment") == MANAGED:
+            continue
+        if sorted(normalize_groups(row.get("groups", []))) == groups:
+            ready.append((kind, entry, row))
+    return ready
 
 
 # ── I/O shell ───────────────────────────────────────────────────────────────
@@ -301,16 +321,14 @@ def adopt_entries(pairs):
     Ownership changes by rewriting the comment, not by deleting and re-adding:
     the row stays where it is, so there is no window in which a blocked domain
     resolves and no gravity rebuild to sit through. Groups and enabled state go
-    back unchanged — the owner is the only thing that moves. A row that already
-    belongs to the reconciler is skipped, so this is safe to repeat.
+    back unchanged — the owner is the only thing that moves. Which rows qualify
+    is decided against a fresh look at live state (see adoptable_now), so this
+    is safe to repeat and safe to run against a box edited since the plan.
     """
-    wanted = {tuple(pair) for pair in pairs}
     sid = sync.login()
     try:
         adopted = []
-        for kind, entry, row in _rows(_fetch(sid)):
-            if (kind, entry) not in wanted or row.get("comment") == MANAGED:
-                continue
+        for kind, entry, row in adoptable_now(pairs, _fetch(sid)):
             body = {"comment": MANAGED,
                     "groups": sorted(normalize_groups(row.get("groups", [])))}
             if kind != "client":
@@ -459,7 +477,7 @@ def main(argv=None):
         return 0
     plan = plan_harvest(read_json(args.merge or args.check or args.plan_adopt))
     if args.plan_adopt:
-        paths = {path for _, _, paths in plan.routed for path in paths}
+        paths = {path for _, _, paths, _ in plan.routed for path in paths}
         json.dump(plan_adopt(plan.routed, read_present(args.dir, paths)), sys.stdout)
         print()
         return 0
