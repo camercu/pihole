@@ -1,0 +1,122 @@
+"""End-to-end tests: harvesting hand-made changes off a real Pi-hole container.
+
+The unit tests pin the routing rules against a hand-written state dict; these
+prove the export really reads that shape out of a live FTL API, so a change to
+Pi-hole's response format is caught here rather than on the user's box.
+
+Assertions look for the entries a test created rather than for exact file
+contents: a stock Pi-hole already carries an unmanaged adlist of its own, and
+harvesting it is the correct behaviour, not interference.
+"""
+import json
+
+import pytest
+
+pytestmark = pytest.mark.integration
+
+MANAGED = "managed by ansible"
+UI_COMMENT = "added in the UI"
+
+
+@pytest.fixture
+def ui(pihole):
+    """Adds entries the way a person would in the admin UI, and removes them after.
+
+    The shared fixture only resets *managed* state, which is exactly what the
+    harvest tests must not rely on — so anything added here is tracked and
+    deleted, keeping one test's hand-made entries out of the next one's export.
+    """
+    api = pihole.api
+    lists, domains, groups = [], [], []
+
+    class UI:
+        def group(self, name):
+            api.post("/groups", {"name": name, "comment": UI_COMMENT,
+                                 "enabled": True})
+            groups.append(name)
+            return next(g["id"] for g in api.groups() if g["name"] == name)
+
+        def adlist(self, address, gids=None):
+            # FTL takes the list type as a query parameter, not a body field.
+            st, body = api.post("/lists?type=block",
+                                {"address": [address], "comment": UI_COMMENT,
+                                 "enabled": True, "groups": gids or [0]})
+            assert st in (200, 201), f"adding adlist: {st} {body}"
+            lists.append(address)
+            return address
+
+        def domain(self, domain, type_, gids=None):
+            st, body = api.post(f"/domains/{type_}/exact",
+                                {"domain": [domain], "comment": UI_COMMENT,
+                                 "enabled": True, "groups": gids or [0]})
+            assert st in (200, 201), f"adding {type_} domain: {st} {body}"
+            domains.append({"item": domain, "type": type_, "kind": "exact"})
+            return domain
+
+    yield UI()
+
+    if domains:
+        api.post("/domains:batchDelete", domains)
+    if lists:
+        api.post("/lists:batchDelete", [{"item": a, "type": "block"} for a in lists])
+    for name in groups:
+        api._call("DELETE", "/groups/" + name)
+
+
+def _export(pihole, tmp_path):
+    r = pihole.run_harvest("--export")
+    assert r.returncode == 0, r.stderr
+    path = tmp_path / "state.json"
+    path.write_text(r.stdout, encoding="utf-8")
+    return json.loads(r.stdout), path
+
+
+def test_export_reports_live_state_in_the_shape_the_planner_reads(pihole, ui,
+                                                                  tmp_path):
+    address = ui.adlist("https://hand.example/l.txt")
+    state, _ = _export(pihole, tmp_path)
+
+    assert set(state) == {"groups", "lists", "domains", "clients"}
+    row = next(x for x in state["lists"] if x["address"] == address)
+    assert row["comment"] == UI_COMMENT
+    assert row["enabled"] is True
+    # The planner reads an absent or empty group list as the default group, so
+    # whichever of [] or [0] FTL returns has to be one of those two.
+    assert set(row.get("groups", [])) in ({0}, set())
+
+
+def test_hand_added_entries_land_in_the_config_files(pihole, ui, tmp_path):
+    gid = ui.group("guests")
+    ui.adlist("https://hand.example/l.txt")
+    ui.domain("ok.example", "allow")
+    ui.domain("bad.example", "deny", [gid])
+    _, state = _export(pihole, tmp_path)
+
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    merge = pihole.run_harvest("--merge", str(state), "--dir", str(cfg))
+    assert "CHANGED" in merge.stdout, merge.stderr
+
+    assert "https://hand.example/l.txt" in (cfg / "adlists.txt").read_text()
+    assert "ok.example" in (cfg / "allow.list").read_text()
+    assert (cfg / "groups/guests/block.list").read_text() == "bad.example\n"
+
+    # A second merge of the same state finds everything recorded already.
+    again = pihole.run_harvest("--merge", str(state), "--dir", str(cfg))
+    assert "no changes" in again.stdout
+
+
+def test_managed_entries_are_left_out_of_the_capture(pihole, tmp_path):
+    address = "https://managed.example/l.txt"
+    st, body = pihole.api.post("/lists?type=block",
+                               {"address": [address], "comment": MANAGED,
+                                "enabled": True})
+    assert st in (200, 201), f"{st} {body}"
+    _, state = _export(pihole, tmp_path)
+
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    pihole.run_harvest("--merge", str(state), "--dir", str(cfg))
+    # The reconciler's own entries are in the config files already; writing them
+    # back would duplicate every managed line on each harvest.
+    assert address not in (cfg / "adlists.txt").read_text()

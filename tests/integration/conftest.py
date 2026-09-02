@@ -37,6 +37,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 SYNC_SCRIPT = _ROOT / "ansible/roles/pihole/files/pihole_sync_lists.py"
 BACKUP_SCRIPT = _ROOT / "ansible/roles/backup/files/pihole_backup.py"
 SMOKE_SCRIPT = _ROOT / "ansible/roles/verify/files/pihole_smoke.py"
+HARVEST_SCRIPT = _ROOT / "ansible/roles/pihole/files/pihole_harvest.py"
 
 
 def _detect_runtime():
@@ -264,6 +265,15 @@ class SimpleEnv:
                "PIHOLE_DIR": str(config_dir)}
         return subprocess.run(
             ["python", str(SYNC_SCRIPT)], env=env, text=True,
+            capture_output=True)
+
+    def run_harvest(self, *args):
+        """Run the real harvest script as a subprocess against the container."""
+        env = {**os.environ,
+               "PIHOLE_API": self.base,
+               "PIHOLE_PASSWORD": PASSWORD}
+        return subprocess.run(
+            ["python", str(HARVEST_SCRIPT), *args], env=env, text=True,
             capture_output=True)
 
     def run_backup(self, restic_env):
