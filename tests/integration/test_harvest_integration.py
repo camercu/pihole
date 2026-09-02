@@ -76,7 +76,8 @@ def test_export_reports_live_state_in_the_shape_the_planner_reads(pihole, ui,
     address = ui.adlist("https://hand.example/l.txt")
     state, _ = _export(pihole, tmp_path)
 
-    assert set(state) == {"groups", "lists", "domains", "clients"}
+    assert set(state) == {"groups", "lists", "allow_lists", "domains",
+                          "clients"}
     row = next(x for x in state["lists"] if x["address"] == address)
     assert row["comment"] == UI_COMMENT
     assert row["enabled"] is True
@@ -168,3 +169,25 @@ def test_an_unrecorded_entry_is_not_handed_over(pihole, ui, tmp_path):
 
     row = next(x for x in pihole.api.lists() if x["address"] == address)
     assert row["comment"] == UI_COMMENT
+
+
+def test_an_allow_adlist_is_reported_rather_than_passed_over(pihole, tmp_path):
+    # Pi-hole keeps allow adlists in the same table under a different type. The
+    # config has no file for them, so the drift check must say so instead of
+    # calling a box that carries one "in sync".
+    address = "https://allowlist.example/l.txt"
+    st, body = pihole.api.post("/lists?type=allow",
+                               {"address": [address], "comment": UI_COMMENT,
+                                "enabled": True})
+    assert st in (200, 201), f"{st} {body}"
+    try:
+        state, path = _export(pihole, tmp_path)
+        assert any(x["address"] == address for x in state["allow_lists"])
+
+        cfg = tmp_path / "config"
+        cfg.mkdir()
+        check = pihole.run_harvest("--check", str(path), "--dir", str(cfg))
+        assert address in check.stderr
+        assert "allow adlist" in check.stderr
+    finally:
+        pihole.api.post("/lists:batchDelete", [{"item": address, "type": "allow"}])

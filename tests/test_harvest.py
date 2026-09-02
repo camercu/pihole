@@ -6,6 +6,9 @@ tests pin down is *faithfulness* — an entry is only routed into a config file
 when re-running the reconciler from that file would reproduce the entry's
 current group set exactly. Anything else is reported, never silently reshaped.
 """
+import os
+import pathlib
+
 import pihole_harvest as h
 
 MANAGED = "managed by ansible"
@@ -123,10 +126,11 @@ def test_deny_domain_blocked_network_wide_only_says_so():
 
 
 def test_deny_domain_spanning_two_groups_is_written_to_both():
-    state = _state(domains=[_domain("bad.example", "deny", "regex", [2, 3])])
+    pattern = r"(\.|^)bad\.example$"
+    state = _state(domains=[_domain(pattern, "deny", "regex", [2, 3])])
     assert h.plan_harvest(state).files == {
-        "groups/kids/block.list": ["bad.example"],
-        "groups/guests/block.list": ["bad.example"],
+        "groups/kids/block.list": [pattern],
+        "groups/guests/block.list": [pattern],
     }
 
 
@@ -340,3 +344,98 @@ def test_adoption_reads_config_files_the_way_the_reconciler_does(tmp_path):
         "# a comment\nhttps://a.example/l.txt # ours\n", encoding="utf-8")
     assert h.read_present(tmp_path, ["adlists.txt", "missing.txt"]) == {
         "adlists.txt": {"https://a.example/l.txt"}, "missing.txt": set()}
+
+
+# ── shapes the config file cannot round-trip ────────────────────────────────
+def test_regex_domain_that_reads_as_a_plain_domain_is_reported():
+    # block.list carries no shape marker: the reconciler re-derives regex-ness
+    # from the text. A keyword regex like this has no metacharacters, so it
+    # would come back as an exact match and stop blocking subdomains.
+    state = _state(domains=[_domain("doubleclick", "deny", "regex", [2])])
+    plan = h.plan_harvest(state)
+    assert plan.files == {}
+    assert [item for item, _ in plan.unroutable] == ["deny/regex doubleclick"]
+    assert "regex" in plan.unroutable[0][1]
+
+
+def test_allow_regex_that_reads_as_a_plain_domain_is_reported():
+    state = _state(domains=[_domain("doubleclick", "allow", "regex", [0])])
+    assert h.plan_harvest(state).files == {}
+
+
+def test_regex_domain_with_metacharacters_still_routes():
+    pattern = r"(\.|^)ads\.example$"
+    state = _state(domains=[_domain(pattern, "deny", "regex", [2])])
+    assert h.plan_harvest(state).files == {"groups/kids/block.list": [pattern]}
+
+
+def test_exact_domain_that_reads_as_a_regex_is_reported():
+    # The mirror case: the reconciler would push this back as a regex.
+    state = _state(domains=[_domain("ads*.example", "deny", "exact", [2])])
+    assert h.plan_harvest(state).files == {}
+
+
+def test_entry_with_a_comment_character_is_reported():
+    # merge_lines judges presence after stripping '#', so an entry containing
+    # one would be appended again by every harvest and never read back whole.
+    url = "https://a.example/l.txt#frag"
+    state = _state(lists=[_adlist(url, [0])])
+    plan = h.plan_harvest(state)
+    assert plan.files == {}
+    assert [item for item, _ in plan.unroutable] == [f"adlist {url}"]
+
+
+def test_entry_with_surrounding_whitespace_is_reported():
+    state = _state(lists=[_adlist(" https://a.example/l.txt ", [0])])
+    assert h.plan_harvest(state).files == {}
+
+
+# ── group names that cannot be directories ──────────────────────────────────
+def test_group_named_with_a_path_traversal_is_reported_not_written():
+    groups = GROUPS + [{"id": 4, "name": "../../evil", "comment": None}]
+    state = _state(groups=groups,
+                   domains=[_domain("x.example", "deny", "exact", [4])])
+    plan = h.plan_harvest(state)
+    assert plan.files == {}
+    assert plan.group_dirs == ["guests"]
+    assert any("../../evil" in item for item, _ in plan.unroutable)
+
+
+def test_group_named_with_a_slash_is_reported():
+    groups = GROUPS + [{"id": 4, "name": "a/b", "comment": None}]
+    state = _state(groups=groups,
+                   domains=[_domain("x.example", "deny", "exact", [4])])
+    plan = h.plan_harvest(state)
+    assert plan.files == {}
+    assert "a/b" not in plan.group_dirs
+
+
+def test_group_named_dot_is_reported():
+    groups = GROUPS + [{"id": 4, "name": ".", "comment": None}]
+    plan = h.plan_harvest(_state(groups=groups))
+    assert "." not in plan.group_dirs
+    assert any("'.'" in item for item, _ in plan.unroutable)
+
+
+# ── allow adlists, which the config format has no file for ──────────────────
+def test_allow_type_adlist_is_reported_rather_than_ignored():
+    # Pi-hole keeps allow adlists in the same table under a different type;
+    # dropping them from the export would make the drift check say "in sync"
+    # about a setting no file records.
+    state = _state()
+    state["allow_lists"] = [{"address": "https://a.example/allow.txt",
+                             "type": "allow", "groups": [0], "comment": None,
+                             "enabled": True}]
+    plan = h.plan_harvest(state)
+    assert plan.files == {}
+    assert [item for item, _ in plan.unroutable] == [
+        "allow adlist https://a.example/allow.txt"]
+
+
+
+def test_the_helper_scripts_are_executable():
+    # The harvest, adopt and verify playbooks run these straight from the repo
+    # working tree, so the mode bit is behaviour, not housekeeping.
+    files = pathlib.Path(h.__file__).parent
+    for name in ("pihole_harvest.py", "pihole_sync_lists.py"):
+        assert os.access(files / name, os.X_OK), f"{name} is not executable"

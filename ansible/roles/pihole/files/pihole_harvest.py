@@ -34,6 +34,7 @@ from pihole_sync_lists import (  # noqa: E402
     DEFAULT_GROUP,
     MANAGED,
     clean_lines,
+    is_regex,
     normalize_groups,
 )
 
@@ -54,19 +55,70 @@ class Plan(NamedTuple):
     routed: list
 
 
-def _paths_for(kind, gids, id_to_name):
-    """(config paths, reason) for an entry of `kind` in group ids `gids`.
+_UNUSABLE_GROUP_NAMES = {"", ".", ".."}
+
+
+def is_group_dir_name(name):
+    """True if a group name can be the directory the config represents it as.
+
+    The admin UI takes free text for a group name, while the config gives each
+    group a directory under groups/. A name carrying a path separator would put
+    the file outside the config root entirely, and one the reconciler could
+    never rediscover, since it only enumerates top-level directories there.
+    """
+    return name not in _UNUSABLE_GROUP_NAMES and not set(name) & {"/", "\\"}
+
+
+def round_trips(entry):
+    """True if a config file can carry this entry and give it back unchanged.
+
+    The files use '#' for comments and ignore surrounding whitespace, so an
+    entry containing either comes back as something else — and, because
+    presence is judged after that stripping, would be appended afresh by every
+    harvest while the reconciler pushed the truncated form.
+    """
+    return clean_lines(entry) == [entry]
+
+
+def shape_matches(kind, entry):
+    """True if the config file would give a domain entry back as the same kind.
+
+    allow.list and block.list carry no exact/regex marker: the reconciler
+    re-derives it from the text. A regex without metacharacters ("doubleclick")
+    would come back as an exact match that no longer covers subdomains, and an
+    exact entry that reads as a pattern would come back as a regex.
+    """
+    return kind.split("/")[1] == ("regex" if is_regex(entry) else "exact")
+
+
+def _paths_for(kind, entry, gids, id_to_name):
+    """(config paths, reason) for `entry` of `kind` in group ids `gids`.
 
     Exactly one of the two is meaningful: a reason means the entry is not
     routable and no path is returned. The per-kind rules mirror what
     assemble_desired builds, which is what makes a routed entry faithful.
     """
+    if kind == "allow adlist":
+        return [], ("the config has no file for allow adlists; "
+                    "allowlist-urls.txt fetches domains to allow, which is a "
+                    "different mechanism")
     unknown = sorted(g for g in gids if g not in id_to_name)
     if unknown:
         return [], (f"belongs to group id {unknown[0]}, which no longer exists; "
                     "delete the entry or recreate the group")
+    unusable = sorted(id_to_name[g] for g in gids
+                      if g != DEFAULT_GROUP and not is_group_dir_name(id_to_name[g]))
+    if unusable:
+        return [], ("it is in " + ", ".join(repr(n) for n in unusable)
+                    + ", which cannot be a directory name")
     named = sorted(id_to_name[g] for g in gids if g != DEFAULT_GROUP)
     in_default = DEFAULT_GROUP in gids
+
+    if "/" in kind and not shape_matches(kind, entry):
+        derived = "regex" if is_regex(entry) else "exact"
+        return [], (f"the config files carry no exact/regex marker and this "
+                    f"{kind.split('/')[1]} entry reads as {derived}, so the "
+                    f"reconciler would push it back as {derived}")
 
     if kind == "adlist":
         paths = ["adlists.txt"] if in_default else []
@@ -74,8 +126,9 @@ def _paths_for(kind, gids, id_to_name):
 
     if kind.startswith("allow/"):
         if named:
-            return [], ("allowlists in the config apply network-wide; this one is "
-                        "scoped to " + ", ".join(named))
+            return [], ("allowlists in the config apply network-wide, and this one "
+                        + ("is also in " if in_default else "is scoped to ")
+                        + ", ".join(named))
         return ["allow.list"], None
 
     if kind.startswith("deny/"):
@@ -103,6 +156,8 @@ def _rows(state):
     """(kind, label, entry, groups, enabled) for every entry in live state."""
     for row in state.get("lists", []):
         yield "adlist", row["address"], row
+    for row in state.get("allow_lists", []):
+        yield "allow adlist", row["address"], row
     for row in state.get("domains", []):
         yield f"{row['type']}/{row['kind']}", row["domain"], row
     for row in state.get("clients", []):
@@ -127,8 +182,13 @@ def plan_harvest(state):
             unroutable.append((label, "it is disabled, and the config adds every "
                                       "entry enabled"))
             continue
+        if not round_trips(entry):
+            unroutable.append((label, "a config file cannot carry it unchanged: "
+                                      "'#' starts a comment there and surrounding "
+                                      "whitespace is stripped"))
+            continue
         gids = normalize_groups(row.get("groups", []))
-        paths, reason = _paths_for(kind, gids, id_to_name)
+        paths, reason = _paths_for(kind, entry, gids, id_to_name)
         if reason:
             unroutable.append((label, reason))
             continue
@@ -138,9 +198,18 @@ def plan_harvest(state):
         touched |= {id_to_name[g] for g in gids if g != DEFAULT_GROUP}
 
     # A group made by hand needs a directory too, even with nothing in it yet:
-    # it is configuration the files don't record either.
-    touched |= {g["name"] for g in state.get("groups", [])
-                if g["id"] != DEFAULT_GROUP and g.get("comment") != MANAGED}
+    # it is configuration the files don't record either. One whose name cannot
+    # be a directory is reported instead, whether or not anything is in it.
+    for group in state.get("groups", []):
+        name = group["name"]
+        if group["id"] == DEFAULT_GROUP:
+            continue
+        if not is_group_dir_name(name):
+            unroutable.append((f"group {name!r}",
+                               "it cannot be a directory name, and the config "
+                               "gives each group a directory under groups/"))
+        elif group.get("comment") != MANAGED:
+            touched.add(name)
     return Plan(files={p: sorted(v) for p, v in files.items()},
                 group_dirs=sorted(touched), unroutable=unroutable, routed=routed)
 
@@ -181,17 +250,22 @@ def plan_adopt(routed, present):
 # ── I/O shell ───────────────────────────────────────────────────────────────
 # Each API collection is keyed in the response by the same name we store it
 # under, so one table drives both the fetch and the shape plan_harvest reads.
-COLLECTIONS = (("groups", "/groups"), ("lists", "/lists?type=block"),
-               ("domains", "/domains"), ("clients", "/clients"))
+# (state key, API path, key in the response). Block and allow adlists share one
+# response key, so the state key has to differ from it for the two to coexist.
+COLLECTIONS = (("groups", "/groups", "groups"),
+               ("lists", "/lists?type=block", "lists"),
+               ("allow_lists", "/lists?type=allow", "lists"),
+               ("domains", "/domains", "domains"),
+               ("clients", "/clients", "clients"))
 
 
 def _fetch(sid):
     state = {}
-    for key, path in COLLECTIONS:
+    for key, path, response_key in COLLECTIONS:
         st, body = sync.api("GET", path, sid)
         if st != 200:
             sync.die(f"GET {path} failed (HTTP {st}): {body}")
-        state[key] = body.get(key, [])
+        state[key] = body.get(response_key, [])
     return state
 
 
