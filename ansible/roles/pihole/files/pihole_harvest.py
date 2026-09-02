@@ -44,10 +44,14 @@ class Plan(NamedTuple):
     files:      config path (relative to the config root) -> lines to ensure present
     group_dirs: group directories the config tree needs, sorted
     unroutable: (entry label, why the config format cannot express it)
+    routed:     (kind, entry, config paths) per captured entry — what adoption
+                needs, and what `files` alone cannot say, since two entries of
+                different kinds can share a name across different files
     """
     files: dict
     group_dirs: list
     unroutable: list
+    routed: list
 
 
 def _paths_for(kind, gids, id_to_name):
@@ -113,7 +117,7 @@ def plan_harvest(state):
     are in the files already, and writing them again would duplicate lines.
     """
     id_to_name = {g["id"]: g["name"] for g in state.get("groups", [])}
-    files, unroutable, touched = {}, [], set()
+    files, unroutable, routed, touched = {}, [], [], set()
 
     for kind, entry, row in _rows(state):
         if row.get("comment") == MANAGED:
@@ -130,6 +134,7 @@ def plan_harvest(state):
             continue
         for path in paths:
             files.setdefault(path, set()).add(entry)
+        routed.append((kind, entry, sorted(paths)))
         touched |= {id_to_name[g] for g in gids if g != DEFAULT_GROUP}
 
     # A group made by hand needs a directory too, even with nothing in it yet:
@@ -137,7 +142,7 @@ def plan_harvest(state):
     touched |= {g["name"] for g in state.get("groups", [])
                 if g["id"] != DEFAULT_GROUP and g.get("comment") != MANAGED}
     return Plan(files={p: sorted(v) for p, v in files.items()},
-                group_dirs=sorted(touched), unroutable=unroutable)
+                group_dirs=sorted(touched), unroutable=unroutable, routed=routed)
 
 
 def merge_lines(existing, new_lines):
@@ -195,13 +200,15 @@ def read_state(source):
         return json.load(f)
 
 
-def apply_plan(root, plan):
-    """Write the plan into the config tree at root; return the paths changed.
+def pending_changes(root, plan):
+    """[(path, new text)] for every config file the plan would alter.
 
-    A file is only rewritten when merging actually adds something, so a harvest
-    with nothing new to record leaves the tree untouched.
+    Deciding and writing are separate so the drift check can ask what a harvest
+    would capture while leaving the working tree exactly as it found it. A file
+    whose entries are all recorded already is absent from the result, which is
+    what keeps an unchanged harvest out of `git diff`.
     """
-    written = []
+    pending = []
     for path in sorted(plan.files):
         full = os.path.join(root, path)
         existing = ""
@@ -209,39 +216,61 @@ def apply_plan(root, plan):
             with open(full, encoding="utf-8") as f:
                 existing = f.read()
         merged = merge_lines(existing, plan.files[path])
-        if merged is None:
-            continue
+        if merged is not None:
+            pending.append((path, merged))
+    return pending
+
+
+def write_changes(root, pending):
+    """Write pending changes out; return the paths written."""
+    for path, text in pending:
+        full = os.path.join(root, path)
         os.makedirs(os.path.dirname(full), exist_ok=True)
         with open(full, "w", encoding="utf-8") as f:
-            f.write(merged)
-        written.append(path)
-    return written
+            f.write(text)
+    return [path for path, _ in pending]
 
 
-def report(root, plan, written):
-    """Print what was captured and what needs a human decision.
+def groups_without_config(root, plan):
+    """Group names the config tree says nothing about, sorted.
+
+    A group earns a directory by having a file in it, and git does not track an
+    empty directory — so a group with nothing to write is named in the report
+    rather than turned into a directory git would drop. Asking the plan what it
+    is about to write, not the disk what exists, keeps the answer the same
+    whether or not the caller goes on to write.
+    """
+    with_files = {path.split("/")[1] for path in plan.files
+                  if path.startswith("groups/")}
+    return [n for n in plan.group_dirs if n not in with_files
+            and not os.path.isdir(os.path.join(root, "groups", n))]
+
+
+def report(root, plan, paths, dry_run):
+    """Print what was captured (or would be) and what needs a human decision.
 
     Returns the exit status: non-zero while anything is left unrecorded, so an
     entry the config cannot express is noticed rather than quietly lost at the
-    next rebuild.
+    next rebuild. Under dry_run an uncaptured change counts as unrecorded too —
+    that is the whole point of the check — whereas capturing it is a success.
     """
-    for path in written:
-        print(f"  ~ {path}")
+    for path in paths:
+        print(("  ! " if dry_run else "  ~ ") + path)
 
     for label, reason in plan.unroutable:
         print(f"WARN: {label} was not captured: {reason}.", file=sys.stderr)
 
-    # A group with no entries has no file to write, and git does not track an
-    # empty directory — so name it instead of leaving a directory git will drop.
-    empty = [n for n in plan.group_dirs
-             if not os.path.isdir(os.path.join(root, "groups", n))]
+    empty = groups_without_config(root, plan)
     for name in empty:
         print(f"WARN: group {name!r} exists in Pi-hole but has no config; add "
               f"groups/{name}/ with a block.list and clients.txt to manage it.",
               file=sys.stderr)
 
-    print("CHANGED" if written else "no changes")
-    outstanding = len(plan.unroutable) + len(empty)
+    if dry_run:
+        print("DRIFT" if paths else "in sync")
+    else:
+        print("CHANGED" if paths else "no changes")
+    outstanding = len(plan.unroutable) + len(empty) + (len(paths) if dry_run else 0)
     if outstanding:
         print(f"ERROR: {outstanding} item(s) still unrecorded (see warnings above)",
               file=sys.stderr)
@@ -256,6 +285,9 @@ def main(argv=None):
     mode.add_argument("--merge", metavar="STATE",
                       help="capture the state in this JSON file ('-' for stdin) "
                            "into the config files under --dir")
+    mode.add_argument("--check", metavar="STATE",
+                      help="report what capturing this state would change, "
+                           "without writing anything")
     parser.add_argument("--dir", default=".", metavar="DIR",
                         help="config root to write into (default: current directory)")
     args = parser.parse_args(argv)
@@ -264,8 +296,11 @@ def main(argv=None):
         json.dump(export_state(), sys.stdout)
         print()
         return 0
-    plan = plan_harvest(read_state(args.merge))
-    return report(args.dir, plan, apply_plan(args.dir, plan))
+    plan = plan_harvest(read_state(args.merge or args.check))
+    pending = pending_changes(args.dir, plan)
+    if args.check:
+        return report(args.dir, plan, [path for path, _ in pending], dry_run=True)
+    return report(args.dir, plan, write_changes(args.dir, pending), dry_run=False)
 
 
 if __name__ == "__main__":

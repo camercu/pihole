@@ -239,3 +239,64 @@ def test_merge_adds_the_missing_newline_before_appending():
 
 def test_merge_dedupes_repeated_entries_in_one_call():
     assert h.merge_lines("", ["a.example", "a.example"]) == "a.example\n"
+
+
+# ── deciding what a harvest would change, before changing it ────────────────
+def test_pending_reports_the_full_text_a_file_would_be_given(tmp_path):
+    (tmp_path / "adlists.txt").write_text("a.example\n", encoding="utf-8")
+    plan = h.Plan(files={"adlists.txt": ["b.example"]}, group_dirs=[],
+                  unroutable=[], routed=[])
+    assert h.pending_changes(tmp_path, plan) == [
+        ("adlists.txt", "a.example\nb.example\n")]
+
+
+def test_pending_covers_a_file_that_does_not_exist_yet(tmp_path):
+    plan = h.Plan(files={"groups/kids/block.list": ["bad.example"]},
+                  group_dirs=["kids"], unroutable=[], routed=[])
+    assert h.pending_changes(tmp_path, plan) == [
+        ("groups/kids/block.list", "bad.example\n")]
+
+
+def test_pending_is_empty_when_every_entry_is_already_recorded(tmp_path):
+    (tmp_path / "adlists.txt").write_text("a.example\n", encoding="utf-8")
+    plan = h.Plan(files={"adlists.txt": ["a.example"]}, group_dirs=[],
+                  unroutable=[], routed=[])
+    assert h.pending_changes(tmp_path, plan) == []
+
+
+def test_pending_changes_nothing_on_disk(tmp_path):
+    # The drift check runs this against a working tree it must not touch.
+    path = tmp_path / "adlists.txt"
+    path.write_text("a.example\n", encoding="utf-8")
+    plan = h.Plan(files={"adlists.txt": ["b.example"]}, group_dirs=[],
+                  unroutable=[], routed=[])
+    h.pending_changes(tmp_path, plan)
+    assert path.read_text() == "a.example\n"
+    assert not (tmp_path / "groups").exists()
+
+
+def test_write_changes_creates_missing_directories(tmp_path):
+    h.write_changes(tmp_path, [("groups/kids/block.list", "bad.example\n")])
+    assert (tmp_path / "groups/kids/block.list").read_text() == "bad.example\n"
+
+
+# ── groups the config tree has nothing to say about ─────────────────────────
+def test_group_with_entries_to_write_is_not_reported_as_unconfigured(tmp_path):
+    # The check runs without writing, so "does the directory exist yet" is the
+    # wrong question — this group is about to get a file.
+    plan = h.Plan(files={"groups/kids/block.list": ["bad.example"]},
+                  group_dirs=["kids"], unroutable=[], routed=[])
+    assert h.groups_without_config(tmp_path, plan) == []
+
+
+def test_group_with_an_existing_directory_is_not_reported(tmp_path):
+    (tmp_path / "groups" / "kids").mkdir(parents=True)
+    plan = h.Plan(files={}, group_dirs=["kids"], unroutable=[], routed=[])
+    assert h.groups_without_config(tmp_path, plan) == []
+
+
+def test_group_with_neither_files_nor_a_directory_is_reported(tmp_path):
+    # git does not track an empty directory, so there is nothing to create —
+    # only something to tell the user about.
+    plan = h.Plan(files={}, group_dirs=["guests"], unroutable=[], routed=[])
+    assert h.groups_without_config(tmp_path, plan) == ["guests"]
