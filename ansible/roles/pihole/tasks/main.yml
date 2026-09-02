@@ -105,13 +105,25 @@
     mode: "0644"
     directory_mode: "0755"
 
-- name: Deploy list reconciler
+# Both scripts keep their module filenames because the harvester imports the
+# reconciler for the ownership contract they share ("managed by ansible", the
+# default-group rule), and Python only imports a module whose filename is an
+# identifier. They land in the same directory so that import resolves.
+- name: Deploy list reconciler and harvester
   ansible.builtin.copy:
-    src: pihole_sync_lists.py
-    dest: /usr/local/bin/pihole-sync-lists.py
+    src: "{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
     owner: root
     group: root
     mode: "0755"
+  loop:
+    - pihole_sync_lists.py
+    - pihole_harvest.py
+
+- name: Remove the reconciler's former hyphenated path
+  ansible.builtin.file:
+    path: /usr/local/bin/pihole-sync-lists.py
+    state: absent
 
 # The API password goes to a root-only file, not the reconciler's environment.
 # Passing it via environment: would leak it in Ansible output at -vvv and in
@@ -142,7 +154,7 @@
 # CHANGED/error output stays visible.
 - name: Reconcile Pi-hole lists via API
   ansible.builtin.command:
-    cmd: /usr/local/bin/pihole-sync-lists.py
+    cmd: /usr/local/bin/pihole_sync_lists.py
   environment:
     PIHOLE_PASSWORD_FILE: /etc/pihole-secrets/api-password
     PIHOLE_DIR: /etc/pihole/managed

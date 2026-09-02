@@ -1,0 +1,47 @@
+---
+# Capture changes made by hand in the admin UI back into this repo's config
+# files, so they survive a rebuild:
+#   nix-shell --run 'just harvest'   (or: ansible-playbook harvest.yml)
+# Reads live Pi-hole state, writes what the config format can express into
+# ansible/roles/pihole/files/, and names anything it cannot. Review the result
+# with `git diff` before committing — the box is not modified either way.
+- name: Capture hand-made Pi-hole changes into the config files
+  hosts: pihole
+  become: true
+  tasks:
+    - name: Export live Pi-hole state
+      ansible.builtin.command:
+        cmd: /usr/local/bin/pihole_harvest.py --export
+      environment:
+        PIHOLE_PASSWORD_FILE: /etc/pihole-secrets/api-password
+      register: pihole_state
+      changed_when: false
+
+    # Runs on the controller against the repo working tree: the routing rules
+    # and the files they write both live here, so a change to how an entry is
+    # captured is a repo edit rather than a redeploy. become: false because the
+    # files belong to whoever checked the repo out, not to root.
+    - name: Merge the exported state into the repo config files
+      ansible.builtin.command:
+        cmd: >-
+          {{ playbook_dir }}/roles/pihole/files/pihole_harvest.py
+          --merge - --dir {{ playbook_dir }}/roles/pihole/files
+        stdin: "{{ pihole_state.stdout }}"
+      delegate_to: localhost
+      become: false
+      register: pihole_harvest
+      changed_when: "'CHANGED' in pihole_harvest.stdout"
+      failed_when: false
+
+    # Printed before the failure below, so the warnings explaining what could
+    # not be captured are readable rather than buried in a task error dump.
+    - name: Show what was captured
+      ansible.builtin.debug:
+        msg: "{{ (pihole_harvest.stdout_lines + pihole_harvest.stderr_lines) | select | list }}"
+
+    - name: Fail when anything is left unrecorded
+      ansible.builtin.fail:
+        msg: >-
+          Some live settings could not be captured (see above). Record each one
+          another way, or accept that a rebuild will not restore it.
+      when: pihole_harvest.rc != 0

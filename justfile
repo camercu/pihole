@@ -26,3 +26,8 @@ test:
 # Needs docker or podman on PATH; pulls the pinned pihole image on first run.
 test-full:
     PIHOLE_IT=1 pytest -q
+
+# Capture changes made by hand in the admin UI into the config files as code.
+# Writes into ansible/roles/pihole/files/; review with `git diff` before committing.
+harvest:
+    cd ansible && ansible-playbook harvest.yml
