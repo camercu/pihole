@@ -42,6 +42,7 @@ ansible/
   inventory.yml             # the Pi: host, ssh user
   site.yml                  # runs the roles in order
   verify.yml                # post-deploy smoke test (run against the live host)
+  harvest.yml               # capture changes made in the admin UI back into the files
   group_vars/all/
     defaults.yml            # generic per-site facts (overridden by local.yml)
     main.yml                # cross-role interface: unbound endpoint, password
@@ -109,6 +110,9 @@ nix-shell --run 'cd ansible && ansible-playbook site.yml'
 
 # Preview without changing anything:
 nix-shell --run 'cd ansible && ansible-playbook site.yml --check --diff'
+
+# Capture changes made by hand in the admin UI into the config files:
+nix-shell --run 'just harvest'
 
 # One role only (tags: common, unbound, pihole, maintenance):
 nix-shell --run 'cd ansible && ansible-playbook site.yml --tags pihole'
@@ -188,6 +192,27 @@ download is never treated as "removed", so a network blip can't wipe entries. If
 you also add an entry (adlist, domain, or client) **by hand** in the admin UI
 that a config file already manages, it's skipped with a warning and the run exits
 non-zero so you notice — remove the hand-added copy to let the role manage it.
+
+### Capturing changes made in the admin UI
+
+The reconciler pushes files into Pi-hole and leaves entries added by hand alone,
+so a blocklist you add in the UI works but no file records it — a rebuild from a
+fresh SD card loses it. `just harvest` closes that loop: it reads live Pi-hole
+state and writes what the config format can express into
+`ansible/roles/pihole/files/`, ready to review with `git diff` and commit. It
+never changes the Pi.
+
+An entry is captured only when reconciling from the file it lands in would
+reproduce that entry's current group set exactly. The UI can say things the
+config cannot — an allowlist scoped to one group, a device outside the default
+group, a disabled row — and capturing those anyway would change what Pi-hole
+blocks, so harvest names each one with the reason and exits non-zero instead.
+Record those another way, or accept that a rebuild won't restore them.
+
+A harvested entry still carries its hand-added comment on the box, so the next
+`site.yml` run reports it as a collision. Delete it in the admin UI once the
+config file has it: the reconciler then adds it back as managed and owns it from
+there.
 
 ## Secrets (Ansible Vault)
 
