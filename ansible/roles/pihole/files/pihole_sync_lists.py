@@ -233,7 +233,8 @@ CLIENT = Kind("client", "/clients", "/clients:batchDelete",
 
 def allow_kind(kind):  # kind: "exact" | "regex"
     return Kind(f"allow/{kind}", f"/domains/allow/{kind}", "/domains:batchDelete",
-                "domains", "domain", {"type": "allow", "kind": kind}, "domains")
+                "domains", "domain", {"type": "allow", "kind": kind}, "domains",
+                lambda e: f"/domains/allow/{kind}/{_q(e)}")
 
 
 def deny_kind(kind):  # kind: "exact" | "regex"

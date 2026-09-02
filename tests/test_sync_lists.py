@@ -178,10 +178,13 @@ def test_bucket_by_groups_empty():
 
 
 def test_reconcile_membership_rejects_kind_without_item_path():
-    # allow_kind has no PUT item_path; membership reconcile needs one, so it
-    # must fail fast (before any API call) rather than NoneType-crash mid-run.
+    # Membership reconcile PUTs through item_path, so a kind that lacks one must
+    # fail fast (before any API call) rather than NoneType-crash mid-run.
+    pathless = s.Kind("pathless", "/nowhere", "/nowhere:batchDelete", "nowhere",
+                      "item", {}, "domains")
+    assert pathless.item_path is None
     with pytest.raises(AssertionError):
-        s.reconcile_membership(None, s.allow_kind("exact"), {})
+        s.reconcile_membership(None, pathless, {})
 
 
 def test_normalize_groups_empty_means_default_group():
