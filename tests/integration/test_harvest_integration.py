@@ -120,3 +120,51 @@ def test_managed_entries_are_left_out_of_the_capture(pihole, tmp_path):
     # The reconciler's own entries are in the config files already; writing them
     # back would duplicate every managed line on each harvest.
     assert address not in (cfg / "adlists.txt").read_text()
+
+
+def test_an_adopted_entry_stops_colliding_with_the_reconciler(pihole, ui, tmp_path):
+    address = ui.adlist("https://hand.example/l.txt")
+    _, state = _export(pihole, tmp_path)
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    assert "CHANGED" in pihole.run_harvest("--merge", str(state),
+                                           "--dir", str(cfg)).stdout
+    # Narrow the captured file to this test's own entry, leaving the stock
+    # adlist Pi-hole ships unmanaged and out of the way.
+    (cfg / "adlists.txt").write_text(address + "\n", encoding="utf-8")
+
+    plan = pihole.run_harvest("--plan-adopt", str(state), "--dir", str(cfg))
+    assert plan.returncode == 0, plan.stderr
+    assert address in plan.stdout
+    pairs = tmp_path / "adoptable.json"
+    pairs.write_text(plan.stdout, encoding="utf-8")
+
+    adopt = pihole.run_harvest("--adopt", str(pairs))
+    assert "CHANGED" in adopt.stdout, adopt.stderr
+
+    row = next(x for x in pihole.api.lists() if x["address"] == address)
+    assert row["comment"] == MANAGED
+    assert row["enabled"] is True
+    assert set(row["groups"]) == {0}
+
+    # The whole point: reconciling from the captured file is now a clean no-op
+    # instead of the collision the hand-added comment used to cause.
+    r = pihole.run_sync(cfg)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "no changes" in r.stdout
+
+
+def test_an_unrecorded_entry_is_not_handed_over(pihole, ui, tmp_path):
+    # Adopting an entry no config file lists would let the next reconcile
+    # delete it, turning a capture tool into a way to lose settings.
+    address = ui.adlist("https://unrecorded.example/l.txt")
+    _, state = _export(pihole, tmp_path)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    plan = pihole.run_harvest("--plan-adopt", str(state), "--dir", str(empty))
+    assert plan.returncode == 0, plan.stderr
+    assert address not in plan.stdout
+
+    row = next(x for x in pihole.api.lists() if x["address"] == address)
+    assert row["comment"] == UI_COMMENT
