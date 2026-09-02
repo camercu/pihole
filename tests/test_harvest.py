@@ -300,3 +300,43 @@ def test_group_with_neither_files_nor_a_directory_is_reported(tmp_path):
     # only something to tell the user about.
     plan = h.Plan(files={}, group_dirs=["guests"], unroutable=[], routed=[])
     assert h.groups_without_config(tmp_path, plan) == ["guests"]
+
+
+# ── handing a captured entry over to the reconciler ─────────────────────────
+def test_entry_recorded_in_its_config_file_can_be_adopted():
+    routed = [("adlist", "https://a.example/l.txt", ["adlists.txt"])]
+    present = {"adlists.txt": {"https://a.example/l.txt"}}
+    assert h.plan_adopt(routed, present) == [
+        ("adlist", "https://a.example/l.txt")]
+
+
+def test_entry_missing_from_its_config_file_is_not_adopted():
+    # Marking it managed would hand the reconciler an entry no file asks for,
+    # and the next run would delete it.
+    routed = [("adlist", "https://a.example/l.txt", ["adlists.txt"])]
+    assert h.plan_adopt(routed, {"adlists.txt": {"https://other.example/l.txt"}}) == []
+
+
+def test_entry_recorded_in_only_some_of_its_files_is_not_adopted():
+    # A shared adlist in the default group and kids: with only the top-level
+    # file recording it, adopting would drop kids from its group set.
+    routed = [("adlist", "https://a.example/l.txt",
+               ["adlists.txt", "groups/kids/adlists.txt"])]
+    present = {"adlists.txt": {"https://a.example/l.txt"},
+               "groups/kids/adlists.txt": set()}
+    assert h.plan_adopt(routed, present) == []
+
+
+def test_adoption_distinguishes_entries_of_different_kinds():
+    # The same name allowed network-wide and denied for a group are two rows.
+    routed = [("allow/exact", "x.example", ["allow.list"]),
+              ("deny/exact", "x.example", ["groups/kids/block.list"])]
+    present = {"allow.list": {"x.example"}, "groups/kids/block.list": set()}
+    assert h.plan_adopt(routed, present) == [("allow/exact", "x.example")]
+
+
+def test_adoption_reads_config_files_the_way_the_reconciler_does(tmp_path):
+    (tmp_path / "adlists.txt").write_text(
+        "# a comment\nhttps://a.example/l.txt # ours\n", encoding="utf-8")
+    assert h.read_present(tmp_path, ["adlists.txt", "missing.txt"]) == {
+        "adlists.txt": {"https://a.example/l.txt"}, "missing.txt": set()}

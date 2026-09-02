@@ -164,11 +164,35 @@ def merge_lines(existing, new_lines):
     return prefix + "".join(ln + "\n" for ln in add)
 
 
+def plan_adopt(routed, present):
+    """(kind, entry) pairs the reconciler can safely be given ownership of.
+
+    Adoption is what ends the collision a captured entry still causes: the row
+    keeps its groups and its place in Pi-hole and only changes hands. The
+    condition is that every config file the entry routed into already lists it —
+    a half-recorded entry handed over would be reconciled down to what the files
+    do say, silently narrowing its group set, or deleted outright when no file
+    asks for it at all.
+    """
+    return sorted((kind, entry) for kind, entry, paths in routed
+                  if all(entry in present.get(path, ()) for path in paths))
+
+
 # ── I/O shell ───────────────────────────────────────────────────────────────
 # Each API collection is keyed in the response by the same name we store it
 # under, so one table drives both the fetch and the shape plan_harvest reads.
 COLLECTIONS = (("groups", "/groups"), ("lists", "/lists?type=block"),
                ("domains", "/domains"), ("clients", "/clients"))
+
+
+def _fetch(sid):
+    state = {}
+    for key, path in COLLECTIONS:
+        st, body = sync.api("GET", path, sid)
+        if st != 200:
+            sync.die(f"GET {path} failed (HTTP {st}): {body}")
+        state[key] = body.get(key, [])
+    return state
 
 
 def export_state():
@@ -181,23 +205,74 @@ def export_state():
     """
     sid = sync.login()
     try:
-        state = {}
-        for key, path in COLLECTIONS:
-            st, body = sync.api("GET", path, sid)
-            if st != 200:
-                sync.die(f"GET {path} failed (HTTP {st}): {body}")
-            state[key] = body.get(key, [])
-        return state
+        return _fetch(sid)
     finally:
         sync.logout(sid)
 
 
-def read_state(source):
-    """Exported state from a file, or from stdin when source is '-'."""
+def _item_path(kind, entry):
+    """The single-entry API path for one row, as the reconciler addresses it."""
+    if kind == "adlist":
+        return sync.ADLIST.item_path(entry)
+    if kind == "client":
+        return sync.CLIENT.item_path(entry)
+    type_, domain_kind = kind.split("/")
+    build = sync.allow_kind if type_ == "allow" else sync.deny_kind
+    return build(domain_kind).item_path(entry)
+
+
+def adopt_entries(pairs):
+    """Hand each (kind, entry) row to the reconciler; return the ones handed over.
+
+    Ownership changes by rewriting the comment, not by deleting and re-adding:
+    the row stays where it is, so there is no window in which a blocked domain
+    resolves and no gravity rebuild to sit through. Groups and enabled state go
+    back unchanged — the owner is the only thing that moves. A row that already
+    belongs to the reconciler is skipped, so this is safe to repeat.
+    """
+    wanted = {tuple(pair) for pair in pairs}
+    sid = sync.login()
+    try:
+        adopted = []
+        for kind, entry, row in _rows(_fetch(sid)):
+            if (kind, entry) not in wanted or row.get("comment") == MANAGED:
+                continue
+            body = {"comment": MANAGED,
+                    "groups": sorted(normalize_groups(row.get("groups", [])))}
+            if kind != "client":
+                body["enabled"] = row.get("enabled", True)
+            st, resp = sync.api("PUT", _item_path(kind, entry), sid, body)
+            if st not in (200, 201, 204):
+                sync.die(f"adopting {kind} {entry!r} failed (HTTP {st}): {resp}")
+            adopted.append((kind, entry))
+        return adopted
+    finally:
+        sync.logout(sid)
+
+
+def read_json(source):
+    """JSON from a file, or from stdin when source is '-'."""
     if source == "-":
         return json.load(sys.stdin)
     with open(source, encoding="utf-8") as f:
         return json.load(f)
+
+
+def read_present(root, paths):
+    """path -> the entries each config file records, read as the reconciler does.
+
+    A commented-out line is not an entry, here or there; agreeing on that is
+    what makes "the file already records it" mean the same thing to both.
+    """
+    present = {}
+    for path in paths:
+        full = os.path.join(root, path)
+        text = ""
+        if os.path.exists(full):
+            with open(full, encoding="utf-8") as f:
+                text = f.read()
+        present[path] = set(clean_lines(text))
+    return present
 
 
 def pending_changes(root, plan):
@@ -288,6 +363,12 @@ def main(argv=None):
     mode.add_argument("--check", metavar="STATE",
                       help="report what capturing this state would change, "
                            "without writing anything")
+    mode.add_argument("--plan-adopt", metavar="STATE",
+                      help="print the entries in this state that the config files "
+                           "under --dir already record, as JSON")
+    mode.add_argument("--adopt", metavar="ENTRIES",
+                      help="hand the entries in this JSON file ('-' for stdin) to "
+                           "the reconciler (run on the Pi-hole host)")
     parser.add_argument("--dir", default=".", metavar="DIR",
                         help="config root to write into (default: current directory)")
     args = parser.parse_args(argv)
@@ -296,7 +377,18 @@ def main(argv=None):
         json.dump(export_state(), sys.stdout)
         print()
         return 0
-    plan = plan_harvest(read_state(args.merge or args.check))
+    if args.adopt:
+        adopted = adopt_entries(read_json(args.adopt))
+        for kind, entry in adopted:
+            print(f"  ~ {kind} {entry}")
+        print("CHANGED" if adopted else "no changes")
+        return 0
+    plan = plan_harvest(read_json(args.merge or args.check or args.plan_adopt))
+    if args.plan_adopt:
+        paths = {path for _, _, paths in plan.routed for path in paths}
+        json.dump(plan_adopt(plan.routed, read_present(args.dir, paths)), sys.stdout)
+        print()
+        return 0
     pending = pending_changes(args.dir, plan)
     if args.check:
         return report(args.dir, plan, [path for path, _ in pending], dry_run=True)
