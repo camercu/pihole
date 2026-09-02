@@ -31,3 +31,8 @@ test-full:
 # Writes into ansible/roles/pihole/files/; review with `git diff` before committing.
 harvest:
     cd ansible && ansible-playbook harvest.yml
+
+# Hand entries captured by `just harvest` over to the reconciler, so it manages
+# them from now on. Run after committing the harvest diff.
+adopt:
+    cd ansible && ansible-playbook adopt.yml

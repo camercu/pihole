@@ -1,0 +1,46 @@
+---
+# Hand entries added by hand in the admin UI over to the reconciler, once the
+# config files record them:
+#   nix-shell --run 'just adopt'   (or: ansible-playbook adopt.yml)
+# Run this after `just harvest` and after committing the diff it produced. Only
+# entries every config file already lists are handed over, so an entry still
+# unrecorded is left alone rather than reconciled away. Ownership changes by
+# rewriting the entry's comment: nothing is deleted, re-added, or re-resolved.
+- name: Hand captured entries over to the reconciler
+  hosts: pihole
+  become: true
+  tasks:
+    - name: Export live Pi-hole state
+      ansible.builtin.command:
+        cmd: /usr/local/bin/pihole_harvest.py --export
+      environment:
+        PIHOLE_PASSWORD_FILE: /etc/pihole-secrets/api-password
+      register: pihole_state
+      changed_when: false
+
+    # The repo working tree decides what may be handed over: it is the thing
+    # under review, and the box's copy of the config files is only as fresh as
+    # the last site.yml run.
+    - name: Decide which entries the config files already record
+      ansible.builtin.command:
+        cmd: >-
+          {{ playbook_dir }}/roles/pihole/files/pihole_harvest.py
+          --plan-adopt - --dir {{ playbook_dir }}/roles/pihole/files
+        stdin: "{{ pihole_state.stdout }}"
+      delegate_to: localhost
+      become: false
+      register: pihole_adoptable
+      changed_when: false
+
+    - name: Hand those entries to the reconciler
+      ansible.builtin.command:
+        cmd: /usr/local/bin/pihole_harvest.py --adopt -
+        stdin: "{{ pihole_adoptable.stdout }}"
+      environment:
+        PIHOLE_PASSWORD_FILE: /etc/pihole-secrets/api-password
+      register: pihole_adopt
+      changed_when: "'CHANGED' in pihole_adopt.stdout"
+
+    - name: Show what changed hands
+      ansible.builtin.debug:
+        msg: "{{ pihole_adopt.stdout_lines }}"
