@@ -91,6 +91,32 @@ def test_hand_added_collision_is_reported_and_left_untouched(pihole, tmp_path):
     assert row["comment"] == "added by hand"
 
 
+def test_a_managed_entry_switched_off_by_hand_is_switched_back_on(pihole, tmp_path):
+    # A config file listing a domain says it is blocked. Switching the row off in
+    # the admin UI leaves it managed, so harvest skips it as already recorded and
+    # the drift check calls the box in sync — the block would stay off through
+    # every run and every rebuild if the reconcile did not assert it.
+    api = pihole.api
+    # A domain no other test uses: reset_managed clears only managed rows, so a
+    # hand-added one from an earlier test would collide here instead.
+    domain = "switchedoff.example"
+    cfg = _cfg(tmp_path, {"groups/kids/block.list": domain + "\n"})
+    assert pihole.run_sync(cfg).returncode == 0
+
+    row = _row(api.domains(), "domain", domain)
+    st, j = api._call("PUT", "/domains/deny/exact/" + domain,
+                      {"comment": "managed by ansible", "enabled": False,
+                       "groups": row["groups"]})
+    assert st in (200, 201, 204), f"switching it off by hand: {st} {j}"
+    assert _row(api.domains(), "domain", domain)["enabled"] is False
+
+    r = pihole.run_sync(cfg)
+
+    assert r.returncode == 0, r.stderr
+    assert "CHANGED" in r.stdout
+    assert _row(api.domains(), "domain", domain)["enabled"] is True
+
+
 def test_converge_adds_reassigns_and_removes(pihole, tmp_path):
     api = pihole.api
     cfg = _cfg(tmp_path, {

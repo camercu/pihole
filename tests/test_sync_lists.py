@@ -87,29 +87,46 @@ def test_plan_remove_is_sorted():
     assert remove == ["a", "b", "c"]
 
 
+def _owned(*gids):
+    """What a config file listing an entry asserts about it: these groups, on."""
+    return s.Owned(frozenset(gids), True)
+
+
 def test_plan_membership_add_update_remove():
-    desired = {"a": {1}, "b": {1, 2}, "c": {2}}
-    current = {"b": {1}, "c": {2}, "d": {1}}
+    desired = {"a": _owned(1), "b": _owned(1, 2), "c": _owned(2)}
+    current = {"b": _owned(1), "c": _owned(2), "d": _owned(1)}
     add, update, remove = s.plan_membership(desired, current)
-    assert add == {"a": {1}}          # only in desired
-    assert update == {"b": {1, 2}}    # in both, group set differs
-    assert remove == ["d"]            # only in current
+    assert add == {"a": _owned(1)}          # only in desired
+    assert update == {"b": _owned(1, 2)}    # in both, group set differs
+    assert remove == ["d"]                  # only in current
 
 
 def test_plan_membership_noop_when_identical():
-    m = {"a": {1}, "b": {0, 3}}
+    m = {"a": _owned(1), "b": _owned(0, 3)}
     assert s.plan_membership(m, dict(m)) == ({}, {}, [])
 
 
 def test_plan_membership_remove_is_sorted():
-    _, _, remove = s.plan_membership({}, {"c": {1}, "a": {1}, "b": {1}})
+    _, _, remove = s.plan_membership({}, {"c": _owned(1), "a": _owned(1),
+                                          "b": _owned(1)})
     assert remove == ["a", "b", "c"]
 
 
 def test_plan_membership_all_new():
-    add, update, remove = s.plan_membership({"a": {1}}, {})
-    assert add == {"a": {1}}
+    add, update, remove = s.plan_membership({"a": _owned(1)}, {})
+    assert add == {"a": _owned(1)}
     assert update == {} and remove == []
+
+
+def test_managed_entry_switched_off_by_hand_is_planned_for_re_enabling():
+    # A config file listing an entry says it is on, so a managed row toggled off
+    # in the admin UI is drift the reconcile has to correct. Nothing else would:
+    # harvest skips rows the reconciler owns, so the block would stay off
+    # through every site.yml run and every rebuild.
+    desired = s.assemble_desired([], [(2, [], ["bad.example"], [])])["deny_exact"]
+    current = {"bad.example": s.Owned(frozenset({2}), False)}
+    _, update, _ = s.plan_membership(desired, current)
+    assert update == desired
 
 
 def test_ftl_already_present_400_is_collision():
@@ -136,15 +153,15 @@ def test_assemble_desired_scopes_and_unions():
         ["global-ad.txt"],
         [(1, ["kids-ad.txt"], ["bad.com", r"(\.|^)x\.com$"], ["10.0.0.5"])],
     )
-    assert d["adlists"] == {"global-ad.txt": {0}, "kids-ad.txt": {1}}
-    assert d["deny_exact"] == {"bad.com": {1}}
-    assert d["deny_regex"] == {r"(\.|^)x\.com$": {1}}
-    assert d["clients"] == {"10.0.0.5": {0, 1}}  # device joins group AND default
+    assert d["adlists"] == {"global-ad.txt": _owned(0), "kids-ad.txt": _owned(1)}
+    assert d["deny_exact"] == {"bad.com": _owned(1)}
+    assert d["deny_regex"] == {r"(\.|^)x\.com$": _owned(1)}
+    assert d["clients"] == {"10.0.0.5": _owned(0, 1)}  # joins group AND default
 
 
 def test_assemble_desired_same_adlist_in_default_and_group_unions():
     d = s.assemble_desired(["shared.txt"], [(1, ["shared.txt"], [], [])])
-    assert d["adlists"] == {"shared.txt": {0, 1}}
+    assert d["adlists"] == {"shared.txt": _owned(0, 1)}
 
 
 def test_assemble_desired_two_groups_accumulate_not_overwrite():
@@ -155,8 +172,8 @@ def test_assemble_desired_two_groups_accumulate_not_overwrite():
         [(1, ["shared.txt"], [], ["10.0.0.5"]),
          (2, ["shared.txt"], [], ["10.0.0.5"])],
     )
-    assert d["adlists"] == {"shared.txt": {1, 2}}
-    assert d["clients"] == {"10.0.0.5": {0, 1, 2}}  # both groups + default
+    assert d["adlists"] == {"shared.txt": _owned(1, 2)}
+    assert d["clients"] == {"10.0.0.5": _owned(0, 1, 2)}  # both groups + default
 
 
 def test_assemble_desired_empty():
@@ -167,10 +184,10 @@ def test_assemble_desired_empty():
 def test_bucket_by_groups_groups_shared_group_set_into_one_batch():
     # Items inserted out of order so the assertion can only pass if the
     # batch actually sorts them (guards the `sorted(items)`).
-    add = {"b": {1}, "a": {1}, "c": {0, 1}}
+    add = {"b": _owned(1), "a": _owned(1), "c": _owned(0, 1)}
     got = s._bucket_by_groups(add)
     # sorted by group-set key, items sorted within each batch
-    assert got == [([0, 1], ["c"]), ([1], ["a", "b"])]
+    assert got == [(_owned(0, 1), ["c"]), (_owned(1), ["a", "b"])]
 
 
 def test_bucket_by_groups_empty():
@@ -203,7 +220,7 @@ def test_normalize_groups_non_default_groups_preserved():
 
 def test_build_membership_unions_group_ids_per_entry():
     got = s.build_membership([(1, ["a", "b"]), (2, ["b", "c"])])
-    assert got == {"a": {1}, "b": {1, 2}, "c": {2}}
+    assert got == {"a": _owned(1), "b": _owned(1, 2), "c": _owned(2)}
 
 
 def test_build_membership_empty():

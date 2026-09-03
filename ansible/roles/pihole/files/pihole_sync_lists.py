@@ -131,13 +131,26 @@ def plan(desired, current):
     return add, remove
 
 
-def plan_membership(desired, current):
-    """Diff item -> group-id-set mappings: (add, update, remove).
+class Owned(NamedTuple):
+    """What a config file asserts about a row the reconciler owns.
 
-    A Pi-hole entry (deny domain, adlist, client) exists once but can belong to
-    several groups, so membership is the set of group ids on it.
-      add    = {item: groups} desired but absent — create with these groups.
-      update = {item: groups} present with a different group set — reassign.
+    A Pi-hole entry exists once but can belong to several groups, and a file
+    that lists an entry is saying it is switched on. Both travel as one value so
+    the diff below compares the whole assertion: a field named here is
+    reconciled without anyone having to add a second comparison for it, which is
+    what let a managed row sit switched off in the admin UI unnoticed.
+
+    groups is a frozenset so the record can key the add-batch buckets.
+    """
+    groups: frozenset
+    enabled: bool
+
+
+def plan_membership(desired, current):
+    """Diff item -> Owned mappings: (add, update, remove).
+
+      add    = {item: Owned} desired but absent — create in that state.
+      update = {item: Owned} present in a different state — PUT the desired one.
       remove = sorted items present but no longer desired — delete.
     """
     add = {i: g for i, g in desired.items() if i not in current}
@@ -159,16 +172,18 @@ def normalize_groups(groups):
 
 
 def build_membership(entries_by_group):
-    """[(group_id, [entries])] -> {entry: set(group_ids)}, unioning duplicates.
+    """[(group_id, [entries])] -> {entry: Owned}, unioning duplicates.
 
     The same entry configured under several groups collapses to one entry owned
-    by all of them (Pi-hole stores each domain/adlist once, group-tagged).
+    by all of them (Pi-hole stores each domain/adlist once, group-tagged). Every
+    entry a file lists is desired enabled — the files have no way to say
+    otherwise, and the reconcile makes that assertion true.
     """
-    membership = {}
+    groups = {}
     for gid, entries in entries_by_group:
         for entry in entries:
-            membership.setdefault(entry, set()).add(gid)
-    return membership
+            groups.setdefault(entry, set()).add(gid)
+    return {entry: Owned(frozenset(gids), True) for entry, gids in groups.items()}
 
 
 def assemble_desired(default_adlists, group_inputs):
@@ -416,25 +431,29 @@ def reconcile_membership(sid, kind, desired):
     st, j = api("GET", kind.path, sid)
     if st != 200:
         die(f"GET {kind.label} failed (HTTP {st}): {j}")
-    current = {x[kind.field]: normalize_groups(x.get("groups", []))
+    current = {x[kind.field]: Owned(frozenset(normalize_groups(x.get("groups", []))),
+                                    bool(x.get("enabled", True)))
                for x in j.get(kind.collection, []) if x.get("comment") == MANAGED}
     add, update, remove = plan_membership(desired, current)
 
-    enabled = {"enabled": True} if kind.enabled else {}
-    for group_set, items in _bucket_by_groups(add):
-        body = {"comment": MANAGED, "groups": group_set, **enabled}
-        added = add_entries(sid, kind, items, body)
+    def body_for(owned):
+        # Clients carry no enabled column, so the field is omitted rather than
+        # sent as a value FTL has nowhere to put.
+        state = {"enabled": owned.enabled} if kind.enabled else {}
+        return {"comment": MANAGED, "groups": sorted(owned.groups), **state}
+
+    for owned, items in _bucket_by_groups(add):
+        added = add_entries(sid, kind, items, body_for(owned))
         if added:
             changed[kind.bucket] = True
-            print(f"  + {added} {kind.label} -> groups {group_set}")
+            print(f"  + {added} {kind.label} -> groups {sorted(owned.groups)}")
 
-    for entry, groups in update.items():
-        st, j = api("PUT", kind.item_path(entry), sid,
-                    {"comment": MANAGED, "groups": sorted(groups), **enabled})
+    for entry, owned in update.items():
+        st, j = api("PUT", kind.item_path(entry), sid, body_for(owned))
         if st not in (200, 201, 204):
-            die(f"reassigning {kind.label} {entry!r} failed (HTTP {st}): {j}")
+            die(f"reasserting {kind.label} {entry!r} failed (HTTP {st}): {j}")
         changed[kind.bucket] = True
-        print(f"  ~ {entry} -> groups {sorted(groups)}")
+        print(f"  ~ {entry} -> groups {sorted(owned.groups)}, enabled {owned.enabled}")
 
     if remove:
         st, j = api("POST", kind.del_path, sid,
@@ -446,14 +465,17 @@ def reconcile_membership(sid, kind, desired):
 
 
 def _bucket_by_groups(add):
-    """Group an {entry: group_set} add-map into (sorted_group_list, [entries]).
+    """Group an {entry: Owned} add-map into (Owned, [entries]).
 
-    Entries sharing a group set POST together; the sort keys make output stable.
+    Entries the files assert the same thing about POST together; the sort keys
+    make output stable. Sorted by group ids then enabled, since a frozenset has
+    no order of its own.
     """
     buckets = {}
-    for entry, groups in add.items():
-        buckets.setdefault(tuple(sorted(groups)), []).append(entry)
-    return [(list(gs), sorted(items)) for gs, items in sorted(buckets.items())]
+    for entry, owned in add.items():
+        buckets.setdefault(owned, []).append(entry)
+    return [(owned, sorted(items)) for owned, items in
+            sorted(buckets.items(), key=lambda kv: (sorted(kv[0].groups), kv[0].enabled))]
 
 
 def group_ids(sid):

@@ -196,6 +196,13 @@ you also add an entry (adlist, domain, or client) **by hand** in the admin UI
 that a config file already manages, it's skipped with a warning and the run exits
 non-zero so you notice — remove the hand-added copy to let the role manage it.
 
+Ownership is total: a file listing an entry says which groups it belongs to *and*
+that it is switched on. Toggling a managed row off in the admin UI is undone on
+the next run, because nothing else would put it back — harvest skips rows the
+reconciler owns, so a managed block left off would survive every run and every
+rebuild while the files went on claiming it was in force. To switch one off for
+good, take it out of the config file.
+
 ### Capturing changes made in the admin UI
 
 The reconciler pushes files into Pi-hole and leaves entries added by hand alone,
