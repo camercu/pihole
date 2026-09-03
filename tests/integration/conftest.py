@@ -33,6 +33,9 @@ PIHOLE_PORT = 8081  # host -> pihole :80
 FILES_PORT = 8000  # host -> fileserver :8000 (also reachable in-net as FILES_CT)
 
 MANAGED = "managed by ansible"
+# Connection-level failures, as the scripts' tracebacks name them. FTL closes
+# sockets while it restarts DNS, so these mean "try again", not "the run failed".
+_DROPPED = ("ConnectionResetError", "RemoteDisconnected", "URLError")
 _ROOT = Path(__file__).resolve().parents[2]
 SYNC_SCRIPT = _ROOT / "ansible/roles/pihole/files/pihole_sync_lists.py"
 BACKUP_SCRIPT = _ROOT / "ansible/roles/backup/files/pihole_backup.py"
@@ -135,6 +138,22 @@ class Api:
     def clients(self):
         return self.get("/clients")["clients"]
 
+    def wait_reachable(self, timeout=30):
+        """Block until the API answers again.
+
+        FTL drops in-flight connections while it restarts DNS, so a reset here
+        means "not back yet", not "broken".
+        """
+        deadline = time.time() + timeout
+        while True:
+            try:
+                self._call("GET", "/groups")
+                return
+            except OSError as e:  # URLError and ConnectionResetError both
+                if time.time() > deadline:
+                    raise AssertionError(f"API never came back: {e}") from e
+                time.sleep(0.25)
+
     def wait_writable(self, timeout=30):
         """Block until FTL accepts a write again.
 
@@ -145,6 +164,7 @@ class Api:
         deadline = time.time() + timeout
         probe = "_it_writable_probe"
         while True:
+            self.wait_reachable(timeout)
             st, j = self._call("POST", "/groups",
                                {"name": probe, "comment": MANAGED, "enabled": True})
             if st in (200, 201):
@@ -257,34 +277,37 @@ class SimpleEnv:
         self.api = api
         self.sidecar = sidecar
 
+    def _run(self, script, args=(), **env_extra):
+        """Run one deployed script as a subprocess, once more if FTL dropped it.
+
+        A run that changes anything asks FTL to restart DNS, and the restart
+        lands after the script has already exited — so the next script to start
+        can meet a closed socket through no fault of its own, in whichever test
+        happens to run next. These scripts are idempotent, which is what makes
+        running one again the honest answer to a dropped connection rather than
+        a way to paper over a failure: only a connection-level error is retried,
+        only once, and a second failure is reported as the test's own.
+        """
+        env = {**os.environ, "PIHOLE_API": self.base,
+               "PIHOLE_PASSWORD": PASSWORD, **env_extra}
+        cmd = ["python", str(script), *args]
+        done = subprocess.run(cmd, env=env, text=True, capture_output=True)
+        if done.returncode != 0 and any(e in done.stderr for e in _DROPPED):
+            self.api.wait_reachable()
+            done = subprocess.run(cmd, env=env, text=True, capture_output=True)
+        return done
+
     def run_sync(self, config_dir):
         """Run the real sync script as a subprocess against the container."""
-        env = {**os.environ,
-               "PIHOLE_API": self.base,
-               "PIHOLE_PASSWORD": PASSWORD,
-               "PIHOLE_DIR": str(config_dir)}
-        return subprocess.run(
-            ["python", str(SYNC_SCRIPT)], env=env, text=True,
-            capture_output=True)
+        return self._run(SYNC_SCRIPT, PIHOLE_DIR=str(config_dir))
 
     def run_harvest(self, *args):
         """Run the real harvest script as a subprocess against the container."""
-        env = {**os.environ,
-               "PIHOLE_API": self.base,
-               "PIHOLE_PASSWORD": PASSWORD}
-        return subprocess.run(
-            ["python", str(HARVEST_SCRIPT), *args], env=env, text=True,
-            capture_output=True)
+        return self._run(HARVEST_SCRIPT, args)
 
     def run_backup(self, restic_env):
         """Run the real backup script; restic_env carries the RESTIC_* settings."""
-        env = {**os.environ,
-               "PIHOLE_API": self.base,
-               "PIHOLE_PASSWORD": PASSWORD,
-               **restic_env}
-        return subprocess.run(
-            ["python", str(BACKUP_SCRIPT)], env=env, text=True,
-            capture_output=True)
+        return self._run(BACKUP_SCRIPT, **restic_env)
 
     def run_smoke_in_net(self, extra_env=None):
         """Run the smoke script *inside* the container network.
