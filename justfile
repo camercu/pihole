@@ -27,7 +27,8 @@ test:
 test-full:
     PIHOLE_IT=1 pytest -q
 
-# Capture changes made by hand in the admin UI into the config files as code.
+# Capture changes made by hand in the admin UI into the config files as code —
+# additions and deletions both, so the UI can be where you work.
 # Writes into ansible/roles/pihole/files/; review with `git diff` before committing.
 harvest:
     cd ansible && ansible-playbook harvest.yml

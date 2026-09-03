@@ -107,7 +107,31 @@ def test_hand_added_entries_land_in_the_config_files(pihole, ui, tmp_path):
     assert "no changes" in again.stdout
 
 
-def test_managed_entries_are_left_out_of_the_capture(pihole, tmp_path):
+def test_an_entry_deleted_in_the_admin_ui_leaves_the_config_file(pihole, ui,
+                                                                 tmp_path):
+    # The other half of capture: without it the admin UI can only ever add, and
+    # a blocklist deleted there is put straight back by the next reconcile.
+    address = ui.adlist("https://deleted.example/l.txt")
+    _, state = _export(pihole, tmp_path)
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    assert "CHANGED" in pihole.run_harvest("--merge", str(state),
+                                           "--dir", str(cfg)).stdout
+    assert address in (cfg / "adlists.txt").read_text()
+
+    pihole.api.post("/lists:batchDelete", [{"item": address, "type": "block"}])
+    _, after = _export(pihole, tmp_path)
+
+    assert "CHANGED" in pihole.run_harvest("--merge", str(after),
+                                           "--dir", str(cfg)).stdout
+    assert address not in (cfg / "adlists.txt").read_text()
+
+
+def test_a_managed_entry_already_recorded_is_not_written_twice(pihole, tmp_path):
+    # A file listing what the box holds has to include the reconciler's own
+    # entries — that is what lets a deletion be told apart from an addition —
+    # so the guard against re-appending them is that a line already there counts
+    # as present, not that they are left out.
     address = "https://managed.example/l.txt"
     st, body = pihole.api.post("/lists?type=block",
                                {"address": [address], "comment": MANAGED,
@@ -117,10 +141,11 @@ def test_managed_entries_are_left_out_of_the_capture(pihole, tmp_path):
 
     cfg = tmp_path / "config"
     cfg.mkdir()
+    (cfg / "adlists.txt").write_text(address + "\n", encoding="utf-8")
     pihole.run_harvest("--merge", str(state), "--dir", str(cfg))
-    # The reconciler's own entries are in the config files already; writing them
-    # back would duplicate every managed line on each harvest.
-    assert address not in (cfg / "adlists.txt").read_text()
+    pihole.run_harvest("--merge", str(state), "--dir", str(cfg))
+
+    assert (cfg / "adlists.txt").read_text().count(address) == 1
 
 
 def test_an_adopted_entry_stops_colliding_with_the_reconciler(pihole, ui, tmp_path):

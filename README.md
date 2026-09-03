@@ -201,7 +201,8 @@ that it is switched on. Toggling a managed row off in the admin UI is undone on
 the next run, because nothing else would put it back — harvest skips rows the
 reconciler owns, so a managed block left off would survive every run and every
 rebuild while the files went on claiming it was in force. To switch one off for
-good, take it out of the config file.
+good, delete it in the admin UI and run `just harvest` — the deletion is
+captured, so you never hand-edit the files to undo something you did in the UI.
 
 ### Capturing changes made in the admin UI
 
@@ -211,6 +212,16 @@ fresh SD card loses it. `just harvest` closes that loop: it reads live Pi-hole
 state and writes what the config format can express into
 `ansible/roles/pihole/files/`, ready to review with `git diff` and commit. It
 never changes the Pi.
+
+Capture runs both ways, so the admin UI can be where you work. A file harvest
+owns ends up listing what the box actually holds: entries you added appear,
+entries you deleted go, and your comments, blank lines and ordering are left
+exactly where they were. Only the files harvest can route into are touched —
+`allowlist-urls.txt` names remote lists to fetch rather than entries Pi-hole
+holds, so it is never pruned. If the Pi answers with nothing at all (not yet
+provisioned, or its database wiped), nothing is pruned either: that is a box
+with no state to read, not an instruction to empty the config. `git diff` is
+still the gate — nothing reaches the Pi until you commit and run `site.yml`.
 
 An entry is captured only when reconciling from the file it lands in would
 reproduce that entry's current group set exactly. The UI can say things the

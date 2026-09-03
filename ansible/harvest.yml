@@ -2,9 +2,11 @@
 # Capture changes made by hand in the admin UI back into this repo's config
 # files, so they survive a rebuild:
 #   nix-shell --run 'just harvest'   (or: ansible-playbook harvest.yml)
-# Reads live Pi-hole state, writes what the config format can express into
-# ansible/roles/pihole/files/, and names anything it cannot. Review the result
-# with `git diff` before committing — the box is not modified either way.
+# Reads live Pi-hole state and makes the files it owns under
+# ansible/roles/pihole/files/ say what the box holds — entries added in the UI
+# appear, entries deleted there go — naming anything the config format cannot
+# express. Review with `git diff` before committing; the box is not modified
+# either way.
 - name: Capture hand-made Pi-hole changes into the config files
   hosts: pihole
   become: true

@@ -45,12 +45,20 @@ def _client(client, groups, comment=None):
 
 
 # ── ownership ───────────────────────────────────────────────────────────────
-def test_managed_entries_are_not_harvested():
-    # Already in the config files; harvesting them would duplicate lines.
+def test_a_managed_entry_already_in_its_file_is_not_written_again(tmp_path):
+    # The file is what put it there, so it is part of what the file should list
+    # — but appending it again on every harvest would duplicate the line.
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "adlists.txt").write_text("https://a.example/list.txt\n",
+                                     encoding="utf-8")
     state = _state(lists=[_adlist("https://a.example/list.txt", [0], MANAGED)])
+
     plan = h.plan_harvest(state)
-    assert plan.files == {}
+
+    assert plan.files == {"adlists.txt": ["https://a.example/list.txt"]}
     assert plan.unroutable == []
+    assert h.pending_changes(str(cfg), plan) == []
 
 
 def test_hand_added_default_group_adlist_goes_to_top_level_adlists():
@@ -559,6 +567,55 @@ def _state_file(tmp_path, state):
 
 def _check(tmp_path, state, cfg):
     return h.main(["--check", _state_file(tmp_path, state), "--dir", str(cfg)])
+
+
+def _merge(tmp_path, state, cfg):
+    return h.main(["--merge", _state_file(tmp_path, state), "--dir", str(cfg)])
+
+
+# ── deletions made in the admin UI ──────────────────────────────────────────
+def test_entry_deleted_in_the_admin_ui_is_removed_from_its_config_file(tmp_path):
+    # Capture ran one way only, so deleting a blocklist in the UI left the file
+    # still listing it and the next site.yml put it straight back.
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "adlists.txt").write_text(
+        "# our blocklists\nhttps://gone.example/l.txt\nhttps://kept.example/l.txt\n",
+        encoding="utf-8")
+    state = _only_default_group(
+        lists=[_adlist("https://kept.example/l.txt", [0], MANAGED)])
+
+    _merge(tmp_path, state, cfg)
+
+    assert (cfg / "adlists.txt").read_text() == (
+        "# our blocklists\nhttps://kept.example/l.txt\n")
+
+
+def test_a_file_harvest_cannot_route_to_is_never_pruned(tmp_path):
+    # allowlist-urls.txt names remote lists to fetch, not entries Pi-hole holds,
+    # so no live row corresponds to a line here and every one would look deleted.
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "allowlist-urls.txt").write_text("https://a.example/allow.txt\n",
+                                            encoding="utf-8")
+
+    _merge(tmp_path, _only_default_group(), cfg)
+
+    assert (cfg / "allowlist-urls.txt").read_text() == "https://a.example/allow.txt\n"
+
+
+def test_nothing_is_pruned_when_live_state_is_empty(tmp_path):
+    # An unprovisioned or wiped box answers with nothing at all. Reading that as
+    # "the operator deleted everything" would empty the config in one run.
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "adlists.txt").write_text("https://a.example/l.txt\n", encoding="utf-8")
+    empty = {"groups": [], "lists": [], "allow_lists": [], "domains": [],
+             "clients": []}
+
+    _merge(tmp_path, empty, cfg)
+
+    assert (cfg / "adlists.txt").read_text() == "https://a.example/l.txt\n"
 
 
 def test_check_exits_zero_when_every_setting_is_already_recorded(tmp_path):

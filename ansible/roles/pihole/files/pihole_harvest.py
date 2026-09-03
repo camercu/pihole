@@ -105,17 +105,28 @@ class Entry(NamedTuple):
 class Plan(NamedTuple):
     """What harvesting live state would write.
 
-    files:      config path (relative to the config root) -> lines to ensure present
+    files:      config path (relative to the config root) -> the entries the box
+                holds for that path, which is what the file should end up
+                listing: every live row it routes, whoever added them
     group_dirs: group directories the config tree needs, sorted
     unroutable: (entry label, why the config format cannot express it)
-    routed:     (Entry, config paths) per captured entry — what adoption needs,
+    routed:     (Entry, config paths) per hand-added entry — what adoption needs,
                 and what `files` alone cannot say, since two entries of
                 different kinds can share a name across files
+    protected:  entries the box holds that no file rule places. They exist, so a
+                line carrying one is never pruned wherever it already sits.
+    prunable:   whether live state described the box at all. An unprovisioned or
+                unreachable box answers with nothing, and reading that as "the
+                operator deleted everything" would empty the config in one run.
     """
     files: dict
     group_dirs: list
     unroutable: list
     routed: list
+    # Defaults describe a plan that knows of nothing to protect and nothing to
+    # prune, so a caller building one by hand cannot delete by omission.
+    protected: frozenset = frozenset()
+    prunable: bool = False
 
 
 _UNUSABLE_GROUP_NAMES = {"", ".", ".."}
@@ -258,30 +269,49 @@ def _domain_kind(row):
 
 
 def plan_harvest(state):
-    """Route every hand-added entry in live FTL state to a config file (pure).
+    """Route every live entry to the config file that should list it (pure).
 
     `state` is the raw API shape: {"groups", "lists", "domains", "clients"}.
-    Entries the reconciler already owns (comment == MANAGED) are skipped — they
-    are in the files already, and writing them again would duplicate lines.
+
+    Every live row is routed, not just the hand-added ones, because the files
+    are meant to say what the box holds — so an entry deleted in the admin UI
+    has to leave the file it was in, or the next reconcile would put it straight
+    back. Rows the reconciler already owns are routed silently: they came from
+    these files, and site.yml is what corrects them. Only the hand-added ones
+    are reported when they cannot be expressed, since those are the ones whose
+    author is still waiting to hear whether their change was captured.
     """
     id_to_name = {g["id"]: g["name"] for g in state.get("groups", [])}
     files, unroutable, routed, touched = {}, [], [], set()
+    protected, seen_any = set(), False
 
     for e, managed in _rows(state):
+        seen_any = True
         if managed:
+            paths, reason = _paths_for(e, id_to_name)
+            # It exists, so whatever the files say about it, nothing may delete
+            # the line that carries it on the strength of it being absent.
+            if reason:
+                protected.add(e.entry)
+            else:
+                for path in paths:
+                    files.setdefault(path, set()).add(e.entry)
             continue
         label = f"{e.kind} {e.entry}"
         if not e.enabled:
+            protected.add(e.entry)
             unroutable.append((label, "it is disabled, and the config adds every "
                                       "entry enabled"))
             continue
         if not round_trips(e.entry):
+            protected.add(e.entry)
             unroutable.append((label, "a config file cannot carry it unchanged: "
                                       "'#' starts a comment there and surrounding "
                                       "whitespace is stripped"))
             continue
         paths, reason = _paths_for(e, id_to_name)
         if reason:
+            protected.add(e.entry)
             unroutable.append((label, reason))
             continue
         for path in paths:
@@ -303,26 +333,42 @@ def plan_harvest(state):
         elif group.get("comment") != MANAGED:
             touched.add(name)
     return Plan(files={p: sorted(v) for p, v in files.items()},
-                group_dirs=sorted(touched), unroutable=unroutable, routed=routed)
+                group_dirs=sorted(touched), unroutable=unroutable, routed=routed,
+                protected=protected, prunable=seen_any)
 
 
-def merge_lines(existing, new_lines):
-    """Config file text with `new_lines` present, or None if it already was.
+def merge_lines(existing, wanted, prune=False):
+    """Config file text listing `wanted`, or None if it already did.
 
-    Existing content is kept byte for byte — comments carry the instructions a
-    person reads when editing the file by hand, and the file's own ordering is
-    theirs to choose — so entries append at the end. Presence is judged the way
-    the reconciler reads the file (clean_lines), which means a commented-out
-    example does not count as present: a device really added in the UI has to
-    become a live line. Returning None for an unchanged file keeps a harvest
-    that found nothing out of `git diff`.
+    Comments, blank lines and the file's own ordering survive byte for byte —
+    they carry the instructions a person reads when editing by hand, and the
+    order is theirs to choose — so new entries append at the end and the rest
+    stay where they are. What counts as an entry is judged the way the
+    reconciler reads the file (clean_lines), so a commented-out example is not
+    one: it is neither already present nor a candidate for removal.
+
+    With prune, a line carrying an entry the box no longer holds is dropped —
+    which is how deleting something in the admin UI reaches the files instead of
+    being undone by the next reconcile. Returning None for an unchanged file
+    keeps a harvest that found nothing out of `git diff`.
     """
-    present = set(clean_lines(existing))
-    add = [ln for ln in dict.fromkeys(new_lines) if ln not in present]
-    if not add:
+    wanted_set = set(wanted)
+    kept, present, dropped = [], set(), False
+    for line in existing.splitlines():
+        entries = clean_lines(line)
+        if not entries:  # a comment or a blank: not an entry, so not ours to cut
+            kept.append(line)
+            continue
+        if prune and entries[0] not in wanted_set:
+            dropped = True
+            continue
+        kept.append(line)
+        present.add(entries[0])
+
+    add = [ln for ln in dict.fromkeys(wanted) if ln not in present]
+    if not add and not dropped:
         return None
-    prefix = existing if not existing or existing.endswith("\n") else existing + "\n"
-    return prefix + "".join(ln + "\n" for ln in add)
+    return "".join(ln + "\n" for ln in kept + add)
 
 
 def plan_adopt(routed, present):
@@ -493,22 +539,53 @@ def read_present(root, paths):
     return present
 
 
+# The config files harvest routes live entries into, and so the only ones it may
+# prune. allowlist-urls.txt is deliberately absent: it names remote lists to
+# fetch rather than entries Pi-hole holds, so no live row corresponds to a line
+# in it and every one of them would look deleted.
+_OWNED_FILES = ("adlists.txt", "allow.list")
+_OWNED_GROUP_FILES = ("adlists.txt", "block.list", "clients.txt")
+
+
+def owned_config_files(root):
+    """The existing config files harvest both writes and prunes, sorted.
+
+    Pruning has to visit a file even when live state routes nothing to it: a
+    file whose every entry was deleted in the admin UI is exactly the one with
+    no live entries left, and skipping it would make the last deletion the one
+    that never gets captured.
+    """
+    found = [n for n in _OWNED_FILES if os.path.isfile(os.path.join(root, n))]
+    groups_dir = os.path.join(root, "groups")
+    if os.path.isdir(groups_dir):
+        for name in sorted(os.listdir(groups_dir)):
+            found += [rel for rel in (f"groups/{name}/{f}"
+                                      for f in _OWNED_GROUP_FILES)
+                      if os.path.isfile(os.path.join(root, rel))]
+    return sorted(found)
+
+
 def pending_changes(root, plan):
     """[(path, new text)] for every config file the plan would alter.
 
     Deciding and writing are separate so the drift check can ask what a harvest
     would capture while leaving the working tree exactly as it found it. A file
-    whose entries are all recorded already is absent from the result, which is
-    what keeps an unchanged harvest out of `git diff`.
+    that already lists exactly what the box holds is absent from the result,
+    which is what keeps an unchanged harvest out of `git diff`.
     """
     pending = []
-    for path in sorted(plan.files):
+    for path in sorted(set(plan.files) | set(owned_config_files(root))):
         full = os.path.join(root, path)
         existing = ""
         if os.path.exists(full):
             with open(full, encoding="utf-8") as f:
                 existing = f.read()
-        merged = merge_lines(existing, plan.files[path])
+        # A protected entry stays only where it already is: it exists on the box
+        # but no rule places it, so keeping the line is right and adding one
+        # would be inventing a placement the routing declined to choose.
+        wanted = set(plan.files.get(path, ()))
+        wanted |= plan.protected & set(clean_lines(existing))
+        merged = merge_lines(existing, sorted(wanted), prune=plan.prunable)
         if merged is not None:
             pending.append((path, merged))
     return pending
