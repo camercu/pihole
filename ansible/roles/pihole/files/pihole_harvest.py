@@ -574,9 +574,15 @@ def report(root, plan, paths, dry_run):
     else:
         print("CHANGED" if paths else "no changes")
     unrecordable = len(plan.unroutable) + len(empty)
-    outstanding = unrecordable + (len(paths) if dry_run else 0)
-    if outstanding:
-        print(f"ERROR: {outstanding} item(s) still unrecorded (see warnings above)",
+    # Counted apart because they are different things: one is a number of files
+    # a harvest would write, the other a number of settings it cannot.
+    parts = []
+    if dry_run and paths:
+        parts.append(f"{len(paths)} config file(s) a harvest would write")
+    if unrecordable:
+        parts.append(f"{unrecordable} setting(s) no config file can record")
+    if parts:
+        print("ERROR: " + ", and ".join(parts) + " (see warnings above)",
               file=sys.stderr)
     if dry_run and paths:
         return DRIFT
