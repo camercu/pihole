@@ -117,6 +117,30 @@ def test_a_managed_entry_switched_off_by_hand_is_switched_back_on(pihole, tmp_pa
     assert _row(api.domains(), "domain", domain)["enabled"] is True
 
 
+def test_a_managed_allow_domain_switched_off_by_hand_is_switched_back_on(pihole,
+                                                                        tmp_path):
+    # Allowlists reconcile network-wide rather than per group, and used to take a
+    # path that diffed on presence alone — so this one entry kind kept the very
+    # gap the enabled assertion closed everywhere else, while the README claimed
+    # ownership was total.
+    api = pihole.api
+    domain = "switchedoffallow.example"
+    cfg = _cfg(tmp_path, {"allow.list": domain + "\n"})
+    assert pihole.run_sync(cfg).returncode == 0
+
+    st, j = api._call("PUT", "/domains/allow/exact/" + domain,
+                      {"comment": "managed by ansible", "enabled": False,
+                       "groups": [0]})
+    assert st in (200, 201, 204), f"switching it off by hand: {st} {j}"
+    assert _row(api.domains(), "domain", domain)["enabled"] is False
+
+    r = pihole.run_sync(cfg)
+
+    assert r.returncode == 0, r.stderr
+    assert "CHANGED" in r.stdout
+    assert _row(api.domains(), "domain", domain)["enabled"] is True
+
+
 def test_converge_adds_reassigns_and_removes(pihole, tmp_path):
     api = pihole.api
     cfg = _cfg(tmp_path, {

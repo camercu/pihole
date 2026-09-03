@@ -25,7 +25,7 @@ non-zero if an entry couldn't be added because it already exists as a hand-added
 one (warned and skipped, so the rest of the run still converges).
 
 Structure: the pure functions below (clean_lines, is_regex, split_allow,
-host_domain, plan, plan_membership, build_membership, assemble_desired,
+host_domain, plan_membership, build_membership, network_wide, assemble_desired,
 normalize_groups, discover_groups, is_collision) hold the decision logic and are
 unit-tested; everything that touches the network or filesystem is the thin shell
 beneath them.
@@ -118,19 +118,6 @@ def discover_groups(groups_dir):
     return out
 
 
-def plan(desired, current):
-    """Pure diff: (to_add, to_remove).
-
-    to_add   = desired entries not already present (order preserved, de-duped).
-    to_remove = managed-and-present entries no longer desired (sorted).
-    """
-    desired_seen = dict.fromkeys(desired)  # de-dupe, keep order
-    current = set(current)
-    add = [d for d in desired_seen if d not in current]
-    remove = sorted(c for c in current if c not in desired_seen)
-    return add, remove
-
-
 class Owned(NamedTuple):
     """What a config file asserts about a row the reconciler owns.
 
@@ -169,6 +156,18 @@ def normalize_groups(groups):
     a default-only entry back to [0] on every run.
     """
     return set(groups) or {DEFAULT_GROUP}
+
+
+def network_wide(entries):
+    """{entry: Owned} for entries the config applies to the whole network.
+
+    Allowlists name no group: the files say network-wide, which is the default
+    group and nothing else. Expressed as membership so allow entries reconcile
+    through the same path, and so the same whole-record comparison, as every
+    other kind — they were once diffed on presence alone, which is how a managed
+    allow domain switched off in the admin UI stayed off through every run.
+    """
+    return {e: Owned(frozenset({DEFAULT_GROUP}), True) for e in entries}
 
 
 def build_membership(entries_by_group):
@@ -393,46 +392,25 @@ def add_entries(sid, kind, items, extra):
     return added
 
 
-def reconcile(sid, kind, desired, allow_remove=True):
-    """Make the MANAGED entries of one list kind match `desired`."""
-    st, j = api("GET", kind.path, sid)
-    if st != 200:
-        die(f"GET {kind.label} failed (HTTP {st}): {j}")
-    current = {x[kind.field] for x in j.get(kind.collection, [])
-               if x.get("comment") == MANAGED}
-    add, remove = plan(desired, current)
+def reconcile_membership(sid, kind, desired, allow_remove=True):
+    """Reconcile one list kind against {entry: Owned}.
 
-    added = add_entries(sid, kind, add, {"comment": MANAGED, "enabled": True})
-    if added:
-        changed[kind.bucket] = True
-        print(f"  + {added} {kind.label}")
-
-    if remove and not allow_remove:
-        print(f"  ~ skipping removal of {len(remove)} {kind.label} "
-              "(a source failed to load; not removing to avoid data loss)",
-              file=sys.stderr)
-    elif remove:
-        st, j = api("POST", kind.del_path, sid,
-                    [{"item": r, **kind.del_extra} for r in remove])
-        if st not in (200, 204):
-            die(f"removing {kind.label} failed (HTTP {st}): {j}")
-        changed[kind.bucket] = True
-        print(f"  - {len(remove)} {kind.label}")
-
-
-def reconcile_membership(sid, kind, desired):
-    """Reconcile a group-scoped list kind: entry -> set of group ids.
-
-    Unlike `reconcile`, entries carry group membership. Managed entries are
-    created (batched by shared group set), reassigned via PUT when their groups
-    drift, and deleted when no longer desired.
+    The only reconcile path, so every kind is held to the same comparison.
+    Managed entries are created (batched by the state the files assert), PUT
+    back whenever any part of that state has drifted, and deleted when no longer
+    desired. allow_remove=False holds the deletions back when a source failed to
+    load, since an incomplete desired set must not read as "these were removed".
     """
     assert kind.item_path is not None, f"{kind.label} kind has no PUT item_path"
     st, j = api("GET", kind.path, sid)
     if st != 200:
         die(f"GET {kind.label} failed (HTTP {st}): {j}")
+    # Only a kind that has the column can be off; for the rest the files' "on"
+    # has to compare equal to itself, or every run would PUT a field FTL has
+    # nowhere to put and never converge.
     current = {x[kind.field]: Owned(frozenset(normalize_groups(x.get("groups", []))),
-                                    bool(x.get("enabled", True)))
+                                    bool(x.get("enabled", True)) if kind.enabled
+                                    else True)
                for x in j.get(kind.collection, []) if x.get("comment") == MANAGED}
     add, update, remove = plan_membership(desired, current)
 
@@ -455,7 +433,11 @@ def reconcile_membership(sid, kind, desired):
         changed[kind.bucket] = True
         print(f"  ~ {entry} -> groups {sorted(owned.groups)}, enabled {owned.enabled}")
 
-    if remove:
+    if remove and not allow_remove:
+        print(f"  ~ skipping removal of {len(remove)} {kind.label} "
+              "(a source failed to load; not removing to avoid data loss)",
+              file=sys.stderr)
+    elif remove:
         st, j = api("POST", kind.del_path, sid,
                     [{"item": r, **kind.del_extra} for r in remove])
         if st not in (200, 204):
@@ -531,8 +513,9 @@ def main():
             allow_exact += fetch_domains(url)
         # allow_exact draws on remote lists; only remove exact entries if every
         # source loaded (fetch_ok). Regex doesn't fetch, so removal is always safe.
-        reconcile(sid, allow_kind("exact"), allow_exact, allow_remove=fetch_ok)
-        reconcile(sid, allow_kind("regex"), allow_regex)
+        reconcile_membership(sid, allow_kind("exact"), network_wide(allow_exact),
+                             allow_remove=fetch_ok)
+        reconcile_membership(sid, allow_kind("regex"), network_wide(allow_regex))
 
         # Read each group's files, then assemble the desired group-scoped state (the
         # product decisions live in assemble_desired, unit-tested). Block adlists span

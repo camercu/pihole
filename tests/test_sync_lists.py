@@ -55,38 +55,6 @@ def test_host_domain_hosts_format_prefix_stripped():
     assert s.host_domain("127.0.0.1\texample.com") == "example.com"
 
 
-def test_plan_add_missing_remove_stale():
-    add, remove = s.plan(["a", "b", "c"], {"b", "x"})
-    assert add == ["a", "c"]  # order preserved
-    assert remove == ["x"]
-
-
-def test_plan_noop_when_identical():
-    assert s.plan(["a", "b"], {"a", "b"}) == ([], [])
-
-
-def test_plan_all_new():
-    add, remove = s.plan(["a", "b"], set())
-    assert add == ["a", "b"]
-    assert remove == []
-
-
-def test_plan_all_stale():
-    add, remove = s.plan([], {"a", "b"})
-    assert add == []
-    assert remove == ["a", "b"]  # sorted
-
-
-def test_plan_dedupes_desired():
-    add, _ = s.plan(["a", "a", "b"], set())
-    assert add == ["a", "b"]
-
-
-def test_plan_remove_is_sorted():
-    _, remove = s.plan([], {"c", "a", "b"})
-    assert remove == ["a", "b", "c"]
-
-
 def _owned(*gids):
     """What a config file listing an entry asserts about it: these groups, on."""
     return s.Owned(frozenset(gids), True)
@@ -127,6 +95,18 @@ def test_managed_entry_switched_off_by_hand_is_planned_for_re_enabling():
     current = {"bad.example": s.Owned(frozenset({2}), False)}
     _, update, _ = s.plan_membership(desired, current)
     assert update == desired
+
+
+def test_network_wide_entries_are_owned_by_the_default_group_and_enabled():
+    # Allowlists name no group, so the files say default group and nothing else.
+    # Saying it as membership is what puts them on the one reconcile path.
+    assert s.network_wide(["a.example"]) == {"a.example": _owned(0)}
+
+
+def test_network_wide_dedupes_what_remote_lists_repeat():
+    # allow.list and a fetched allowlist can name the same domain; the desired
+    # map has one row per entry, as Pi-hole does.
+    assert s.network_wide(["a.example", "a.example"]) == {"a.example": _owned(0)}
 
 
 def test_ftl_already_present_400_is_collision():
