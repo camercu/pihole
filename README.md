@@ -220,7 +220,11 @@ blocks, so harvest names each one with the reason and exits non-zero instead.
 Record those another way, or accept that a rebuild won't restore them.
 
 A captured entry still carries its hand-added comment on the box, so the next
-`site.yml` run would report it as a collision. `just adopt` finishes the job:
+`site.yml` run would report it as a collision. Deploy the committed files first
+(`site.yml`, or `--tags pihole`) — `just adopt` refuses to run while the Pi is
+reconciling from something other than what you just reviewed, since an entry
+only the repo records is one the next reconcile would delete. `just adopt` then
+finishes the job:
 it hands every entry the config files now record over to the reconciler by
 rewriting that comment. Nothing is deleted or re-resolved — the row stays put
 and only changes hands — and an entry no file records is left alone, so adopting

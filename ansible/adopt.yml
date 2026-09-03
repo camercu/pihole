@@ -32,6 +32,29 @@
       register: pihole_adoptable
       changed_when: false
 
+    # The same decision, made from the copy the box actually reconciles from.
+    # Both roots are asked because ownership moves on the box but is judged in
+    # the repo: an entry the repo records and the box's copy does not is one the
+    # next reconcile — run by hand, or by a future timer, before the next
+    # site.yml — would delete as managed-and-not-desired.
+    - name: Decide the same from the config files deployed on the box
+      ansible.builtin.command:
+        cmd: >-
+          /usr/local/bin/pihole_harvest.py
+          --plan-adopt - --dir /etc/pihole/managed
+        stdin: "{{ pihole_state.stdout }}"
+      register: pihole_adoptable_deployed
+      changed_when: false
+
+    # Both plans are sorted, so equal content is equal text.
+    - name: Fail when the box is not running the config files under review
+      ansible.builtin.fail:
+        msg: >-
+          The config files deployed on the Pi are not the ones in this repo, so
+          handing entries over now could let a reconcile delete them. Run
+          `site.yml --tags pihole` first, then `just adopt`.
+      when: pihole_adoptable.stdout != pihole_adoptable_deployed.stdout
+
     - name: Hand those entries to the reconciler
       ansible.builtin.command:
         cmd: /usr/local/bin/pihole_harvest.py --adopt -
