@@ -386,8 +386,22 @@ def plan_adopt(routed, present):
                   if all(e.entry in present.get(path, ()) for path in paths))
 
 
+class Skipped(NamedTuple):
+    """A planned entry that was not handed over, and whether that is a problem.
+
+    stale says the plan no longer describes the box, which is what makes the run
+    exit non-zero and asks for another harvest. A row the reconciler already
+    owns is not stale — that is a repeat run finding its work done. Carried as a
+    field because the exit status once turned on a substring of `reason`, so
+    rewording the sentence would have failed every repeat `just adopt`.
+    """
+    entry: Entry
+    reason: str
+    stale: bool
+
+
 def adoptable_now(planned, state):
-    """(ready, [(entry, why not)]) for the plan against a second look at live state.
+    """(ready, [Skipped]) for the plan against a second look at live state.
 
     Deciding and doing are separated by a round trip, and the admin UI stays
     open throughout. A row edited in between no longer matches the config files
@@ -409,13 +423,13 @@ def adoptable_now(planned, state):
     for e in planned:
         key = (e.kind, e.entry)
         if key in owned:
-            skipped.append((e, "the reconciler already owns it"))
+            skipped.append(Skipped(e, "the reconciler already owns it", False))
         elif key not in live:
-            skipped.append((e, "it is no longer on the box"))
+            skipped.append(Skipped(e, "it is no longer on the box", True))
         elif live[key] != e:
-            skipped.append((e, "it has changed since the plan was made (live "
-                               f"state is groups {list(live[key].groups)}, "
-                               f"enabled {live[key].enabled}); harvest again"))
+            skipped.append(Skipped(e, "it has changed since the plan was made "
+                                      f"(live state is groups {list(live[key].groups)}, "
+                                      f"enabled {live[key].enabled})", True))
         else:
             ready.append(e)
     return ready, skipped
@@ -616,13 +630,15 @@ def groups_without_config(root, plan):
             and not os.path.isdir(os.path.join(root, "groups", n))]
 
 
-# Exit statuses. A verdict and a crash have to be different values: gating on
-# "did it say DRIFT" let a check that never ran read as a clean one, since both
-# leave the same empty stdout. 1 is left to Python's own uncaught-error status
-# so an error cannot collide with anything this script decides.
+# Exit statuses. A verdict and a run that never got started have to be different
+# values: gating on "did it say DRIFT" let a check that crashed read as a clean
+# one, since both leave the same empty stdout. The low numbers are left to the
+# ways this script can fail before deciding anything — 1 is Python's own
+# uncaught-error status and 2 is argparse's usage error — so no verdict can be
+# mistaken for one of them, or one of them for a verdict.
 OK = 0            # nothing left unrecorded
-DRIFT = 2         # settings a harvest would capture are missing from the files
-UNRECORDABLE = 3  # what is left is only what the config format cannot express
+DRIFT = 3         # settings a harvest would capture are missing from the files
+UNRECORDABLE = 4  # what is left is only what the config format cannot express
 
 
 def report(root, plan, paths, dry_run):
@@ -659,7 +675,12 @@ def report(root, plan, paths, dry_run):
     if unrecordable:
         parts.append(f"{unrecordable} setting(s) no config file can record")
     if parts:
-        print("ERROR: " + ", and ".join(parts) + " (see warnings above)",
+        # ERROR only when the status says so. Settings the config cannot express
+        # exit UNRECORDABLE, which verify passes on deliberately — calling that
+        # an error is how a green check ends up printing one, which is the habit
+        # of ignoring the check, taught.
+        level = "ERROR" if (dry_run and paths) else "WARN"
+        print(f"{level}: " + ", and ".join(parts) + " (see warnings above)",
               file=sys.stderr)
     if dry_run and paths:
         return DRIFT
@@ -695,12 +716,11 @@ def main(argv=None):
         adopted, skipped = adopt_entries(entries_from_json(read_json(args.adopt)))
         for e in adopted:
             print(f"  ~ {e.kind} {e.entry}")
-        for e, reason in skipped:
-            print(f"WARN: {e.kind} {e.entry} was not handed over: {reason}.",
-                  file=sys.stderr)
+        for s in skipped:
+            print(f"WARN: {s.entry.kind} {s.entry.entry} was not handed over: "
+                  f"{s.reason}.", file=sys.stderr)
         print("CHANGED" if adopted else "no changes")
-        # A row the reconciler already owns is a repeat run, not a stale plan.
-        stale = [e for e, reason in skipped if "already owns" not in reason]
+        stale = [s for s in skipped if s.stale]
         if stale:
             print(f"ERROR: {len(stale)} planned entr"
                   f"{'y' if len(stale) == 1 else 'ies'} no longer match the box; "

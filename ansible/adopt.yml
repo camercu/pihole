@@ -69,9 +69,19 @@
       ansible.builtin.debug:
         msg: "{{ (pihole_adopt.stdout_lines + pihole_adopt.stderr_lines) | select | list }}"
 
+    # 3 is the one status meaning the plan went stale. 1 and 2 are the script
+    # failing outright (auth, an HTTP error from the PUT, bad arguments), which
+    # another harvest would not fix and must not be described as if it would.
     - name: Fail when a planned entry no longer matches the box
       ansible.builtin.fail:
         msg: >-
           Some entries could not be handed over (see above). The box changed
           between harvest and adopt; run `just harvest` again.
-      when: pihole_adopt.rc != 0
+      when: pihole_adopt.rc == 3
+
+    - name: Fail when handing entries over did not finish
+      ansible.builtin.fail:
+        msg: >-
+          Handing entries to the reconciler failed (exit {{ pihole_adopt.rc }});
+          see the output above. Nothing is known to be wrong with the plan.
+      when: pihole_adopt.rc not in [0, 3]

@@ -502,8 +502,9 @@ def test_a_planned_entry_left_alone_is_named_with_the_reason():
     planned = _entry("adlist", "https://a.example/l.txt", [0])
     state = _live(lists=[_adlist("https://a.example/l.txt", [0, 2])])
     _, skipped = h.adoptable_now([planned], state)
-    assert [e for e, _ in skipped] == [planned]
-    assert "changed since" in skipped[0][1]
+    assert [s.entry for s in skipped] == [planned]
+    assert "changed since" in skipped[0].reason
+    assert skipped[0].stale  # so the run says so rather than reporting success
 
 
 def test_entry_disabled_since_the_plan_is_left_alone():
@@ -524,14 +525,18 @@ def test_entry_already_owned_by_the_reconciler_is_skipped():
     state = _live(lists=[_adlist("https://a.example/l.txt", [0], MANAGED)])
     ready, skipped = h.adoptable_now([planned], state)
     assert ready == []
-    assert "already" in skipped[0][1]
+    assert "already" in skipped[0].reason
+    # Not stale: this is a repeat run finding its work done, so it must not
+    # fail the playbook every time someone runs `just adopt` twice.
+    assert not skipped[0].stale
 
 
 def test_entry_gone_from_the_box_is_skipped():
     planned = _entry("adlist", "https://a.example/l.txt", [0])
     ready, skipped = h.adoptable_now([planned], _live())
     assert ready == []
-    assert "no longer" in skipped[0][1]
+    assert "no longer" in skipped[0].reason
+    assert skipped[0].stale
 
 
 def test_a_plan_survives_the_json_round_trip_between_deciding_and_doing():
@@ -644,6 +649,15 @@ def test_check_exits_unrecordable_when_no_outstanding_setting_can_be_captured(tm
                              "type": "allow", "groups": [0], "comment": None,
                              "enabled": True}]
     assert _check(tmp_path, state, cfg) == h.UNRECORDABLE
+
+
+def test_no_verdict_shares_a_status_with_a_run_that_never_started():
+    # argparse exits 2 on a usage error, so a mistyped flag once landed on the
+    # value meaning "capturable drift" and verify.yml told the operator to run a
+    # harvest that would find nothing.
+    with pytest.raises(SystemExit) as exit_info:
+        h.main(["--no-such-flag"])
+    assert exit_info.value.code not in (h.OK, h.DRIFT, h.UNRECORDABLE)
 
 
 def test_check_that_cannot_read_its_state_fails_rather_than_reporting_in_sync(tmp_path):
