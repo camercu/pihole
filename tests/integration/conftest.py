@@ -283,16 +283,21 @@ class SimpleEnv:
         A run that changes anything asks FTL to restart DNS, and the restart
         lands after the script has already exited — so the next script to start
         can meet a closed socket through no fault of its own, in whichever test
-        happens to run next. These scripts are idempotent, which is what makes
-        running one again the honest answer to a dropped connection rather than
-        a way to paper over a failure: only a connection-level error is retried,
-        only once, and a second failure is reported as the test's own.
+        happens to run next.
+
+        Retried only while the script has done nothing yet, which is where that
+        drop lands: it closes the socket as they start up, and they log every
+        change as they make it, so an empty stdout is exactly that state and
+        re-running from it produces the run the test meant to make. Past that
+        point the retry would report a second run's "no changes" to a test
+        asserting CHANGED, so the failure is left to stand as the test's own.
         """
         env = {**os.environ, "PIHOLE_API": self.base,
                "PIHOLE_PASSWORD": PASSWORD, **env_extra}
         cmd = ["python", str(script), *args]
         done = subprocess.run(cmd, env=env, text=True, capture_output=True)
-        if done.returncode != 0 and any(e in done.stderr for e in _DROPPED):
+        if (done.returncode != 0 and not done.stdout.strip()
+                and any(e in done.stderr for e in _DROPPED)):
             self.api.wait_reachable()
             done = subprocess.run(cmd, env=env, text=True, capture_output=True)
         return done
