@@ -476,7 +476,8 @@ def _live(**kw):
 def test_entry_still_matching_the_plan_is_adopted():
     planned = _entry("adlist", "https://a.example/l.txt", [0])
     state = _live(lists=[_adlist("https://a.example/l.txt", [0])])
-    assert h.adoptable_now([planned], state) == [planned]
+    ready, skipped = h.adoptable_now([planned], state)
+    assert (ready, skipped) == ([planned], [])
 
 
 def test_entry_regrouped_since_the_plan_is_left_alone():
@@ -484,7 +485,17 @@ def test_entry_regrouped_since_the_plan_is_left_alone():
     # record the old group set, so handing it over would narrow it silently.
     planned = _entry("adlist", "https://a.example/l.txt", [0])
     state = _live(lists=[_adlist("https://a.example/l.txt", [0, 2])])
-    assert h.adoptable_now([planned], state) == []
+    assert h.adoptable_now([planned], state)[0] == []
+
+
+def test_a_planned_entry_left_alone_is_named_with_the_reason():
+    # Adoption used to drop these silently and still report success, so a run
+    # that handed over nothing it planned looked exactly like one that worked.
+    planned = _entry("adlist", "https://a.example/l.txt", [0])
+    state = _live(lists=[_adlist("https://a.example/l.txt", [0, 2])])
+    _, skipped = h.adoptable_now([planned], state)
+    assert [e for e, _ in skipped] == [planned]
+    assert "changed since" in skipped[0][1]
 
 
 def test_entry_disabled_since_the_plan_is_left_alone():
@@ -497,18 +508,22 @@ def test_entry_disabled_since_the_plan_is_left_alone():
                            {"adlists.txt": {"https://a.example/l.txt"}})
     switched_off = _live(lists=[_adlist("https://a.example/l.txt", [0],
                                         enabled=False)])
-    assert h.adoptable_now(planned, switched_off) == []
+    assert h.adoptable_now(planned, switched_off)[0] == []
 
 
 def test_entry_already_owned_by_the_reconciler_is_skipped():
     planned = _entry("adlist", "https://a.example/l.txt", [0])
     state = _live(lists=[_adlist("https://a.example/l.txt", [0], MANAGED)])
-    assert h.adoptable_now([planned], state) == []
+    ready, skipped = h.adoptable_now([planned], state)
+    assert ready == []
+    assert "already" in skipped[0][1]
 
 
 def test_entry_gone_from_the_box_is_skipped():
     planned = _entry("adlist", "https://a.example/l.txt", [0])
-    assert h.adoptable_now([planned], _live()) == []
+    ready, skipped = h.adoptable_now([planned], _live())
+    assert ready == []
+    assert "no longer" in skipped[0][1]
 
 
 def test_a_plan_survives_the_json_round_trip_between_deciding_and_doing():
@@ -523,7 +538,7 @@ def test_a_plan_survives_the_json_round_trip_between_deciding_and_doing():
 
     carried = h.entries_from_json(json.loads(json.dumps(h.entries_to_json(planned))))
 
-    assert h.adoptable_now(carried, state) == planned
+    assert h.adoptable_now(carried, state)[0] == planned
     # A Kind, not the bare string it compares equal to: the shell asks `is` of
     # it to decide what goes in the PUT body, and a string answers no to that.
     assert all(isinstance(e.kind, h.Kind) for e in carried)

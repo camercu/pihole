@@ -40,7 +40,15 @@
         PIHOLE_PASSWORD_FILE: /etc/pihole-secrets/api-password
       register: pihole_adopt
       changed_when: "'CHANGED' in pihole_adopt.stdout"
+      failed_when: false
 
     - name: Show what changed hands
       ansible.builtin.debug:
-        msg: "{{ pihole_adopt.stdout_lines }}"
+        msg: "{{ (pihole_adopt.stdout_lines + pihole_adopt.stderr_lines) | select | list }}"
+
+    - name: Fail when a planned entry no longer matches the box
+      ansible.builtin.fail:
+        msg: >-
+          Some entries could not be handed over (see above). The box changed
+          between harvest and adopt; run `just harvest` again.
+      when: pihole_adopt.rc != 0

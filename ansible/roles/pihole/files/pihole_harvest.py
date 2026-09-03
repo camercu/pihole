@@ -341,7 +341,7 @@ def plan_adopt(routed, present):
 
 
 def adoptable_now(planned, state):
-    """The planned entries that live state still matches exactly.
+    """(ready, [(entry, why not)]) for the plan against a second look at live state.
 
     Deciding and doing are separated by a round trip, and the admin UI stays
     open throughout. A row edited in between no longer matches the config files
@@ -349,9 +349,30 @@ def adoptable_now(planned, state):
     as plan_adopt refuses to: regrouped, it would be reconciled down to the
     file's group set; switched off, it would be stamped as the reconciler's
     while off. Whole-record equality covers both, and whatever Entry gains next.
+
+    What was left alone is returned with it rather than dropped, so a run that
+    handed over nothing it planned cannot look like one that worked.
     """
-    wanted = set(planned)
-    return [e for e, managed in _rows(state) if e in wanted and not managed]
+    live, owned = {}, set()
+    for e, managed in _rows(state):
+        live[(e.kind, e.entry)] = e
+        if managed:
+            owned.add((e.kind, e.entry))
+
+    ready, skipped = [], []
+    for e in planned:
+        key = (e.kind, e.entry)
+        if key in owned:
+            skipped.append((e, "the reconciler already owns it"))
+        elif key not in live:
+            skipped.append((e, "it is no longer on the box"))
+        elif live[key] != e:
+            skipped.append((e, "it has changed since the plan was made (live "
+                               f"state is groups {list(live[key].groups)}, "
+                               f"enabled {live[key].enabled}); harvest again"))
+        else:
+            ready.append(e)
+    return ready, skipped
 
 
 # ── I/O shell ───────────────────────────────────────────────────────────────
@@ -397,7 +418,7 @@ def _item_path(e):
 
 
 def adopt_entries(planned):
-    """Hand each planned row to the reconciler; return the ones handed over.
+    """Hand the planned rows over; return (handed over, [(entry, why not)]).
 
     Ownership changes by rewriting the comment, not by deleting and re-adding:
     the row stays where it is, so there is no window in which a blocked domain
@@ -410,7 +431,8 @@ def adopt_entries(planned):
     sid = sync.login()
     try:
         adopted = []
-        for e in adoptable_now(planned, _fetch(sid)):
+        ready, skipped = adoptable_now(planned, _fetch(sid))
+        for e in ready:
             body = {"comment": MANAGED, "groups": list(e.groups)}
             if e.kind is not Kind.CLIENT:  # clients carry no enabled column
                 body["enabled"] = e.enabled
@@ -418,7 +440,7 @@ def adopt_entries(planned):
             if st not in (200, 201, 204):
                 sync.die(f"adopting {e.kind} {e.entry!r} failed (HTTP {st}): {resp}")
             adopted.append(e)
-        return adopted
+        return adopted, skipped
     finally:
         sync.logout(sid)
 
@@ -587,11 +609,20 @@ def main(argv=None):
         print()
         return OK
     if args.adopt:
-        adopted = adopt_entries(entries_from_json(read_json(args.adopt)))
+        adopted, skipped = adopt_entries(entries_from_json(read_json(args.adopt)))
         for e in adopted:
             print(f"  ~ {e.kind} {e.entry}")
+        for e, reason in skipped:
+            print(f"WARN: {e.kind} {e.entry} was not handed over: {reason}.",
+                  file=sys.stderr)
         print("CHANGED" if adopted else "no changes")
-        return OK
+        # A row the reconciler already owns is a repeat run, not a stale plan.
+        stale = [e for e, reason in skipped if "already owns" not in reason]
+        if stale:
+            print(f"ERROR: {len(stale)} planned entr"
+                  f"{'y' if len(stale) == 1 else 'ies'} no longer match the box; "
+                  "run `just harvest` again", file=sys.stderr)
+        return DRIFT if stale else OK
     plan = plan_harvest(read_json(args.merge or args.check or args.plan_adopt))
     if args.plan_adopt:
         paths = {path for _, paths in plan.routed for path in paths}
