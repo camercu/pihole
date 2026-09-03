@@ -6,6 +6,7 @@ tests pin down is *faithfulness* — an entry is only routed into a config file
 when re-running the reconciler from that file would reproduce the entry's
 current group set exactly. Anything else is reported, never silently reshaped.
 """
+import json
 import os
 import pathlib
 
@@ -307,25 +308,28 @@ def test_group_with_neither_files_nor_a_directory_is_reported(tmp_path):
 
 
 # ── handing a captured entry over to the reconciler ─────────────────────────
+def _entry(kind, entry, groups, enabled=True):
+    return h.Entry(kind, entry, tuple(groups), enabled)
+
+
 def test_entry_recorded_in_its_config_file_can_be_adopted():
-    routed = [("adlist", "https://a.example/l.txt", ["adlists.txt"], [0])]
+    adlist = _entry("adlist", "https://a.example/l.txt", [0])
     present = {"adlists.txt": {"https://a.example/l.txt"}}
-    assert h.plan_adopt(routed, present) == [
-        ("adlist", "https://a.example/l.txt", [0])]
+    assert h.plan_adopt([(adlist, ["adlists.txt"])], present) == [adlist]
 
 
 def test_entry_missing_from_its_config_file_is_not_adopted():
     # Marking it managed would hand the reconciler an entry no file asks for,
     # and the next run would delete it.
-    routed = [("adlist", "https://a.example/l.txt", ["adlists.txt"], [0])]
+    routed = [(_entry("adlist", "https://a.example/l.txt", [0]), ["adlists.txt"])]
     assert h.plan_adopt(routed, {"adlists.txt": {"https://other.example/l.txt"}}) == []
 
 
 def test_entry_recorded_in_only_some_of_its_files_is_not_adopted():
     # A shared adlist in the default group and kids: with only the top-level
     # file recording it, adopting would drop kids from its group set.
-    routed = [("adlist", "https://a.example/l.txt",
-               ["adlists.txt", "groups/kids/adlists.txt"], [0, 2])]
+    routed = [(_entry("adlist", "https://a.example/l.txt", [0, 2]),
+               ["adlists.txt", "groups/kids/adlists.txt"])]
     present = {"adlists.txt": {"https://a.example/l.txt"},
                "groups/kids/adlists.txt": set()}
     assert h.plan_adopt(routed, present) == []
@@ -333,10 +337,12 @@ def test_entry_recorded_in_only_some_of_its_files_is_not_adopted():
 
 def test_adoption_distinguishes_entries_of_different_kinds():
     # The same name allowed network-wide and denied for a group are two rows.
-    routed = [("allow/exact", "x.example", ["allow.list"], [0]),
-              ("deny/exact", "x.example", ["groups/kids/block.list"], [2])]
+    allowed = _entry("allow/exact", "x.example", [0])
+    routed = [(allowed, ["allow.list"]),
+              (_entry("deny/exact", "x.example", [2]),
+               ["groups/kids/block.list"])]
     present = {"allow.list": {"x.example"}, "groups/kids/block.list": set()}
-    assert h.plan_adopt(routed, present) == [("allow/exact", "x.example", [0])]
+    assert h.plan_adopt(routed, present) == [allowed]
 
 
 def test_adoption_reads_config_files_the_way_the_reconciler_does(tmp_path):
@@ -432,13 +438,13 @@ def test_allow_type_adlist_is_reported_rather_than_ignored():
         "allow adlist https://a.example/allow.txt"]
 
 
-def test_plan_records_the_group_set_it_decided_against():
+def test_plan_records_the_row_it_decided_against():
     # Adoption happens later, against a second look at live state; without the
-    # group set the plan was made from there is nothing to re-check.
+    # record the plan was made from there is nothing to re-check.
     state = _state(lists=[_adlist("https://a.example/l.txt", [0, 2])])
     assert h.plan_harvest(state).routed == [
-        ("adlist", "https://a.example/l.txt",
-         ["adlists.txt", "groups/kids/adlists.txt"], [0, 2])]
+        (_entry("adlist", "https://a.example/l.txt", [0, 2]),
+         ["adlists.txt", "groups/kids/adlists.txt"])]
 
 
 # ── adoption re-checks live state before changing anything ──────────────────
@@ -447,25 +453,56 @@ def _live(**kw):
 
 
 def test_entry_still_matching_the_plan_is_adopted():
+    planned = _entry("adlist", "https://a.example/l.txt", [0])
     state = _live(lists=[_adlist("https://a.example/l.txt", [0])])
-    ready = h.adoptable_now([("adlist", "https://a.example/l.txt", [0])], state)
-    assert [(k, e) for k, e, _ in ready] == [("adlist", "https://a.example/l.txt")]
+    assert h.adoptable_now([planned], state) == [planned]
 
 
 def test_entry_regrouped_since_the_plan_is_left_alone():
     # Someone moved it in the UI between harvest and adopt: the config files
     # record the old group set, so handing it over would narrow it silently.
+    planned = _entry("adlist", "https://a.example/l.txt", [0])
     state = _live(lists=[_adlist("https://a.example/l.txt", [0, 2])])
-    assert h.adoptable_now([("adlist", "https://a.example/l.txt", [0])], state) == []
+    assert h.adoptable_now([planned], state) == []
+
+
+def test_entry_disabled_since_the_plan_is_left_alone():
+    # Someone switched it off in the UI between harvest and adopt. Harvest
+    # refuses to route a disabled row at all, so adopting one would stamp it as
+    # the reconciler's while it is off — and the reconciler sets enabled only on
+    # add, so nothing would ever switch it back on.
+    at_harvest = _live(lists=[_adlist("https://a.example/l.txt", [0])])
+    planned = h.plan_adopt(h.plan_harvest(at_harvest).routed,
+                           {"adlists.txt": {"https://a.example/l.txt"}})
+    switched_off = _live(lists=[_adlist("https://a.example/l.txt", [0],
+                                        enabled=False)])
+    assert h.adoptable_now(planned, switched_off) == []
 
 
 def test_entry_already_owned_by_the_reconciler_is_skipped():
+    planned = _entry("adlist", "https://a.example/l.txt", [0])
     state = _live(lists=[_adlist("https://a.example/l.txt", [0], MANAGED)])
-    assert h.adoptable_now([("adlist", "https://a.example/l.txt", [0])], state) == []
+    assert h.adoptable_now([planned], state) == []
 
 
 def test_entry_gone_from_the_box_is_skipped():
-    assert h.adoptable_now([("adlist", "https://a.example/l.txt", [0])], _live()) == []
+    planned = _entry("adlist", "https://a.example/l.txt", [0])
+    assert h.adoptable_now([planned], _live()) == []
+
+
+def test_a_plan_survives_the_json_round_trip_between_deciding_and_doing():
+    # --plan-adopt writes the decision as JSON on the controller and --adopt
+    # reads it back on the Pi. Group ids arrive as a list; a record compared by
+    # value would match nothing if it stayed one, and adoption would silently
+    # hand over nothing while reporting success.
+    state = _live(lists=[_adlist("https://a.example/l.txt", [0, 2])])
+    recorded = {"adlists.txt": {"https://a.example/l.txt"},
+                "groups/kids/adlists.txt": {"https://a.example/l.txt"}}
+    planned = h.plan_adopt(h.plan_harvest(state).routed, recorded)
+
+    carried = h.entries_from_json(json.loads(json.dumps(h.entries_to_json(planned))))
+
+    assert h.adoptable_now(carried, state) == planned
 
 
 def test_the_helper_scripts_are_executable():

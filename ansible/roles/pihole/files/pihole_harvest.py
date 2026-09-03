@@ -39,15 +39,33 @@ from pihole_sync_lists import (  # noqa: E402
 )
 
 
+class Entry(NamedTuple):
+    """A live Pi-hole row reduced to what ownership turns on.
+
+    Identity (kind, entry) plus every field a config file asserts about the
+    row. Adoption re-checks the whole record against live state, so a field
+    named here is re-checked without anyone remembering to compare it — which
+    is what comparing the group set by hand failed to do for `enabled`. A field
+    added here is covered by that check the moment it exists.
+
+    groups is a sorted tuple rather than a set so a record compares by value
+    and survives the JSON round trip between deciding and doing.
+    """
+    kind: str
+    entry: str
+    groups: tuple
+    enabled: bool
+
+
 class Plan(NamedTuple):
     """What harvesting live state would write.
 
     files:      config path (relative to the config root) -> lines to ensure present
     group_dirs: group directories the config tree needs, sorted
     unroutable: (entry label, why the config format cannot express it)
-    routed:     (kind, entry, config paths, group ids) per captured entry — what
-                adoption needs, and what `files` alone cannot say, since two
-                entries of different kinds can share a name across files
+    routed:     (Entry, config paths) per captured entry — what adoption needs,
+                and what `files` alone cannot say, since two entries of
+                different kinds can share a name across files
     """
     files: dict
     group_dirs: list
@@ -91,13 +109,14 @@ def shape_matches(kind, entry):
     return kind.split("/")[1] == ("regex" if is_regex(entry) else "exact")
 
 
-def _paths_for(kind, entry, gids, id_to_name):
-    """(config paths, reason) for `entry` of `kind` in group ids `gids`.
+def _paths_for(e, id_to_name):
+    """(config paths, reason) for one live entry.
 
     Exactly one of the two is meaningful: a reason means the entry is not
     routable and no path is returned. The per-kind rules mirror what
     assemble_desired builds, which is what makes a routed entry faithful.
     """
+    kind, entry, gids = e.kind, e.entry, e.groups
     if kind == "allow adlist":
         return [], ("the config has no file for allow adlists; "
                     "allowlist-urls.txt fetches domains to allow, which is a "
@@ -153,15 +172,26 @@ def _paths_for(kind, entry, gids, id_to_name):
 
 
 def _rows(state):
-    """(kind, label, entry, groups, enabled) for every entry in live state."""
+    """(Entry, whether the reconciler already owns it) for every live row.
+
+    The one place the raw API shape is read, so the record every later decision
+    compares is built the same way whether it came from a harvest or from the
+    second look adoption takes.
+    """
+    def make(kind, field, row):
+        return (Entry(kind, row[field],
+                      tuple(sorted(normalize_groups(row.get("groups", [])))),
+                      bool(row.get("enabled", True))),
+                row.get("comment") == MANAGED)
+
     for row in state.get("lists", []):
-        yield "adlist", row["address"], row
+        yield make("adlist", "address", row)
     for row in state.get("allow_lists", []):
-        yield "allow adlist", row["address"], row
+        yield make("allow adlist", "address", row)
     for row in state.get("domains", []):
-        yield f"{row['type']}/{row['kind']}", row["domain"], row
+        yield make(f"{row['type']}/{row['kind']}", "domain", row)
     for row in state.get("clients", []):
-        yield "client", row["client"], row
+        yield make("client", "client", row)
 
 
 def plan_harvest(state):
@@ -174,28 +204,27 @@ def plan_harvest(state):
     id_to_name = {g["id"]: g["name"] for g in state.get("groups", [])}
     files, unroutable, routed, touched = {}, [], [], set()
 
-    for kind, entry, row in _rows(state):
-        if row.get("comment") == MANAGED:
+    for e, managed in _rows(state):
+        if managed:
             continue
-        label = f"{kind} {entry}"
-        if not row.get("enabled", True):
+        label = f"{e.kind} {e.entry}"
+        if not e.enabled:
             unroutable.append((label, "it is disabled, and the config adds every "
                                       "entry enabled"))
             continue
-        if not round_trips(entry):
+        if not round_trips(e.entry):
             unroutable.append((label, "a config file cannot carry it unchanged: "
                                       "'#' starts a comment there and surrounding "
                                       "whitespace is stripped"))
             continue
-        gids = normalize_groups(row.get("groups", []))
-        paths, reason = _paths_for(kind, entry, gids, id_to_name)
+        paths, reason = _paths_for(e, id_to_name)
         if reason:
             unroutable.append((label, reason))
             continue
         for path in paths:
-            files.setdefault(path, set()).add(entry)
-        routed.append((kind, entry, sorted(paths), sorted(gids)))
-        touched |= {id_to_name[g] for g in gids if g != DEFAULT_GROUP}
+            files.setdefault(path, set()).add(e.entry)
+        routed.append((e, sorted(paths)))
+        touched |= {id_to_name[g] for g in e.groups if g != DEFAULT_GROUP}
 
     # A group made by hand needs a directory too, even with nothing in it yet:
     # it is configuration the files don't record either. One whose name cannot
@@ -234,37 +263,32 @@ def merge_lines(existing, new_lines):
 
 
 def plan_adopt(routed, present):
-    """(kind, entry, groups) the reconciler can safely be given ownership of.
+    """The entries the reconciler can safely be given ownership of.
 
     Adoption is what ends the collision a captured entry still causes: the row
     keeps its groups and its place in Pi-hole and only changes hands. The
     condition is that every config file the entry routed into already lists it —
     a half-recorded entry handed over would be reconciled down to what the files
     do say, silently narrowing its group set, or deleted outright when no file
-    asks for it at all. The group set travels with the decision so that whoever
-    carries it out can tell the entry has not moved since.
+    asks for it at all. The whole record travels with the decision so that
+    whoever carries it out can tell the row has not changed since.
     """
-    return sorted((kind, entry, groups) for kind, entry, paths, groups in routed
-                  if all(entry in present.get(path, ()) for path in paths))
+    return sorted(e for e, paths in routed
+                  if all(e.entry in present.get(path, ()) for path in paths))
 
 
-def adoptable_now(pairs, state):
-    """(kind, entry, row) for planned entries that live state still matches.
+def adoptable_now(planned, state):
+    """The planned entries that live state still matches exactly.
 
     Deciding and doing are separated by a round trip, and the admin UI stays
-    open throughout. An entry regrouped in between no longer matches the config
-    files the decision was made from, so handing it over would narrow it exactly
-    as plan_adopt refuses to — and one already owned needs nothing done.
+    open throughout. A row edited in between no longer matches the config files
+    the decision was made from, so handing it over would misrepresent it exactly
+    as plan_adopt refuses to: regrouped, it would be reconciled down to the
+    file's group set; switched off, it would be stamped as the reconciler's
+    while off. Whole-record equality covers both, and whatever Entry gains next.
     """
-    planned = {(kind, entry): sorted(groups) for kind, entry, groups in pairs}
-    ready = []
-    for kind, entry, row in _rows(state):
-        groups = planned.get((kind, entry))
-        if groups is None or row.get("comment") == MANAGED:
-            continue
-        if sorted(normalize_groups(row.get("groups", []))) == groups:
-            ready.append((kind, entry, row))
-    return ready
+    wanted = set(planned)
+    return [e for e, managed in _rows(state) if e in wanted and not managed]
 
 
 # ── I/O shell ───────────────────────────────────────────────────────────────
@@ -304,42 +328,63 @@ def export_state():
         sync.logout(sid)
 
 
-def _item_path(kind, entry):
+def _item_path(e):
     """The single-entry API path for one row, as the reconciler addresses it."""
-    if kind == "adlist":
-        return sync.ADLIST.item_path(entry)
-    if kind == "client":
-        return sync.CLIENT.item_path(entry)
-    type_, domain_kind = kind.split("/")
+    if e.kind == "adlist":
+        return sync.ADLIST.item_path(e.entry)
+    if e.kind == "client":
+        return sync.CLIENT.item_path(e.entry)
+    type_, domain_kind = e.kind.split("/")
     build = sync.allow_kind if type_ == "allow" else sync.deny_kind
-    return build(domain_kind).item_path(entry)
+    return build(domain_kind).item_path(e.entry)
 
 
-def adopt_entries(pairs):
-    """Hand each (kind, entry) row to the reconciler; return the ones handed over.
+def adopt_entries(planned):
+    """Hand each planned row to the reconciler; return the ones handed over.
 
     Ownership changes by rewriting the comment, not by deleting and re-adding:
     the row stays where it is, so there is no window in which a blocked domain
     resolves and no gravity rebuild to sit through. Groups and enabled state go
-    back unchanged — the owner is the only thing that moves. Which rows qualify
-    is decided against a fresh look at live state (see adoptable_now), so this
-    is safe to repeat and safe to run against a box edited since the plan.
+    back as the plan recorded them — the owner is the only thing that moves, and
+    adoptable_now has just confirmed live state still says the same. Which rows
+    qualify is decided against a fresh look at live state, so this is safe to
+    repeat and safe to run against a box edited since the plan.
     """
     sid = sync.login()
     try:
         adopted = []
-        for kind, entry, row in adoptable_now(pairs, _fetch(sid)):
-            body = {"comment": MANAGED,
-                    "groups": sorted(normalize_groups(row.get("groups", [])))}
-            if kind != "client":
-                body["enabled"] = row.get("enabled", True)
-            st, resp = sync.api("PUT", _item_path(kind, entry), sid, body)
+        for e in adoptable_now(planned, _fetch(sid)):
+            body = {"comment": MANAGED, "groups": list(e.groups)}
+            if e.kind != "client":
+                body["enabled"] = e.enabled
+            st, resp = sync.api("PUT", _item_path(e), sid, body)
             if st not in (200, 201, 204):
-                sync.die(f"adopting {kind} {entry!r} failed (HTTP {st}): {resp}")
-            adopted.append((kind, entry))
+                sync.die(f"adopting {e.kind} {e.entry!r} failed (HTTP {st}): {resp}")
+            adopted.append(e)
         return adopted
     finally:
         sync.logout(sid)
+
+
+def entries_to_json(entries):
+    """Entry records as JSON-ready dicts, for --plan-adopt to hand to --adopt.
+
+    Kept next to entries_from_json: the two are one boundary, and a plan that
+    cannot be read back is a plan that adopts nothing while reporting success.
+    """
+    return [e._asdict() for e in entries]
+
+
+def entries_from_json(data):
+    """Entry records from the JSON --plan-adopt wrote.
+
+    Group ids come back from JSON as a list, and a record that compares by value
+    has to be rebuilt as the tuple it was written as or nothing would ever match
+    and adoption would silently do nothing. Named fields rather than position so
+    a plan written by an older copy of this script fails loudly here instead of
+    landing its fields in the wrong slots.
+    """
+    return [Entry(**{**d, "groups": tuple(d["groups"])}) for d in data]
 
 
 def read_json(source):
@@ -470,15 +515,16 @@ def main(argv=None):
         print()
         return 0
     if args.adopt:
-        adopted = adopt_entries(read_json(args.adopt))
-        for kind, entry in adopted:
-            print(f"  ~ {kind} {entry}")
+        adopted = adopt_entries(entries_from_json(read_json(args.adopt)))
+        for e in adopted:
+            print(f"  ~ {e.kind} {e.entry}")
         print("CHANGED" if adopted else "no changes")
         return 0
     plan = plan_harvest(read_json(args.merge or args.check or args.plan_adopt))
     if args.plan_adopt:
-        paths = {path for _, _, paths, _ in plan.routed for path in paths}
-        json.dump(plan_adopt(plan.routed, read_present(args.dir, paths)), sys.stdout)
+        paths = {path for _, paths in plan.routed for path in paths}
+        planned = plan_adopt(plan.routed, read_present(args.dir, paths))
+        json.dump(entries_to_json(planned), sys.stdout)
         print()
         return 0
     pending = pending_changes(args.dir, plan)
