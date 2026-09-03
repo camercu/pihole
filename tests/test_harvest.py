@@ -11,6 +11,7 @@ import os
 import pathlib
 
 import pihole_harvest as h
+import pytest
 
 MANAGED = "managed by ansible"
 
@@ -503,6 +504,60 @@ def test_a_plan_survives_the_json_round_trip_between_deciding_and_doing():
     carried = h.entries_from_json(json.loads(json.dumps(h.entries_to_json(planned))))
 
     assert h.adoptable_now(carried, state) == planned
+
+
+# ── exit codes, which are what the playbooks gate on ────────────────────────
+def _only_default_group(**kw):
+    """Live state with just the built-in group, so no group-directory warning
+    muddies what the exit code is being asserted about."""
+    return _state(groups=[{"id": 0, "name": "Default", "comment": None}], **kw)
+
+
+def _state_file(tmp_path, state):
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps(state), encoding="utf-8")
+    return str(path)
+
+
+def _check(tmp_path, state, cfg):
+    return h.main(["--check", _state_file(tmp_path, state), "--dir", str(cfg)])
+
+
+def test_check_exits_zero_when_every_setting_is_already_recorded(tmp_path):
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "adlists.txt").write_text("https://a.example/l.txt\n", encoding="utf-8")
+    state = _only_default_group(lists=[_adlist("https://a.example/l.txt", [0])])
+    assert _check(tmp_path, state, cfg) == h.OK
+
+
+def test_check_exits_drift_when_a_setting_could_be_captured(tmp_path):
+    # What verify.yml fails on: `just harvest` would write this into the files.
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    state = _only_default_group(lists=[_adlist("https://a.example/l.txt", [0])])
+    assert _check(tmp_path, state, cfg) == h.DRIFT
+
+
+def test_check_exits_unrecordable_when_no_outstanding_setting_can_be_captured(tmp_path):
+    # What verify.yml does not fail on: there is no fix to apply, and a check
+    # that stays red for something unfixable is one people learn to ignore.
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    state = _only_default_group()
+    state["allow_lists"] = [{"address": "https://a.example/allow.txt",
+                             "type": "allow", "groups": [0], "comment": None,
+                             "enabled": True}]
+    assert _check(tmp_path, state, cfg) == h.UNRECORDABLE
+
+
+def test_check_that_cannot_read_its_state_fails_rather_than_reporting_in_sync(tmp_path):
+    # The hole this separation closes: a check that crashed used to leave the
+    # same empty stdout as a clean one, and verify.yml read that as healthy.
+    bad = tmp_path / "bad.json"
+    bad.write_text("not json", encoding="utf-8")
+    with pytest.raises(json.JSONDecodeError):
+        h.main(["--check", str(bad), "--dir", str(tmp_path)])
 
 
 def test_the_helper_scripts_are_executable():

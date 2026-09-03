@@ -458,13 +458,23 @@ def groups_without_config(root, plan):
             and not os.path.isdir(os.path.join(root, "groups", n))]
 
 
+# Exit statuses. A verdict and a crash have to be different values: gating on
+# "did it say DRIFT" let a check that never ran read as a clean one, since both
+# leave the same empty stdout. 1 is left to Python's own uncaught-error status
+# so an error cannot collide with anything this script decides.
+OK = 0            # nothing left unrecorded
+DRIFT = 2         # settings a harvest would capture are missing from the files
+UNRECORDABLE = 3  # what is left is only what the config format cannot express
+
+
 def report(root, plan, paths, dry_run):
     """Print what was captured (or would be) and what needs a human decision.
 
-    Returns the exit status: non-zero while anything is left unrecorded, so an
-    entry the config cannot express is noticed rather than quietly lost at the
-    next rebuild. Under dry_run an uncaptured change counts as unrecorded too —
-    that is the whole point of the check — whereas capturing it is a success.
+    Returns the exit status (OK / DRIFT / UNRECORDABLE above). The two non-zero
+    ones are kept apart because they call for different things: drift has a fix
+    — run a harvest — while a setting the config cannot express has none, and a
+    check that stays red for something unfixable is one people learn to ignore.
+    Under dry_run an uncaptured change is drift; capturing it is a success.
     """
     for path in paths:
         print(("  ! " if dry_run else "  ~ ") + path)
@@ -482,11 +492,14 @@ def report(root, plan, paths, dry_run):
         print("DRIFT" if paths else "in sync")
     else:
         print("CHANGED" if paths else "no changes")
-    outstanding = len(plan.unroutable) + len(empty) + (len(paths) if dry_run else 0)
+    unrecordable = len(plan.unroutable) + len(empty)
+    outstanding = unrecordable + (len(paths) if dry_run else 0)
     if outstanding:
         print(f"ERROR: {outstanding} item(s) still unrecorded (see warnings above)",
               file=sys.stderr)
-    return 1 if outstanding else 0
+    if dry_run and paths:
+        return DRIFT
+    return UNRECORDABLE if unrecordable else OK
 
 
 def main(argv=None):
@@ -513,20 +526,20 @@ def main(argv=None):
     if args.export:
         json.dump(export_state(), sys.stdout)
         print()
-        return 0
+        return OK
     if args.adopt:
         adopted = adopt_entries(entries_from_json(read_json(args.adopt)))
         for e in adopted:
             print(f"  ~ {e.kind} {e.entry}")
         print("CHANGED" if adopted else "no changes")
-        return 0
+        return OK
     plan = plan_harvest(read_json(args.merge or args.check or args.plan_adopt))
     if args.plan_adopt:
         paths = {path for _, paths in plan.routed for path in paths}
         planned = plan_adopt(plan.routed, read_present(args.dir, paths))
         json.dump(entries_to_json(planned), sys.stdout)
         print()
-        return 0
+        return OK
     pending = pending_changes(args.dir, plan)
     if args.check:
         return report(args.dir, plan, [path for path, _ in pending], dry_run=True)
