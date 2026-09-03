@@ -179,6 +179,26 @@ def test_entry_in_an_unknown_group_id_is_reported():
     assert "99" in plan.unroutable[0][1]
 
 
+def test_domain_of_a_kind_the_config_has_no_rule_for_is_reported():
+    # Routing dispatched by falling through to the client rule, so a domain type
+    # this router does not know — one a later FTL adds — was written into a
+    # group's clients.txt as if it were a device.
+    state = _state(domains=[_domain("x.example", "sinkhole", "exact", [0, 2])])
+    plan = h.plan_harvest(state)
+    assert plan.files == {}  # not "groups/kids/clients.txt": ["x.example"]
+    assert [item for item, _ in plan.unroutable] == ["sinkhole/exact x.example"]
+    assert "device" not in plan.unroutable[0][1]  # nor rejected as one
+
+
+def test_every_adoptable_kind_has_a_single_entry_api_path():
+    # Adoption PUTs through this table. A kind missing from it would 404 against
+    # a live box and nowhere else — the integration tests only adopt an adlist.
+    for kind in h.Kind:
+        if kind is h.Kind.ALLOW_ADLIST:
+            continue  # never routed, so never adopted
+        assert h._item_path(h.Entry(kind, "x.example", (0,), True))
+
+
 # ── group directories ───────────────────────────────────────────────────────
 def test_hand_created_group_yields_a_group_directory():
     assert h.plan_harvest(_state()).group_dirs == ["guests"]
@@ -504,6 +524,9 @@ def test_a_plan_survives_the_json_round_trip_between_deciding_and_doing():
     carried = h.entries_from_json(json.loads(json.dumps(h.entries_to_json(planned))))
 
     assert h.adoptable_now(carried, state) == planned
+    # A Kind, not the bare string it compares equal to: the shell asks `is` of
+    # it to decide what goes in the PUT body, and a string answers no to that.
+    assert all(isinstance(e.kind, h.Kind) for e in carried)
 
 
 # ── exit codes, which are what the playbooks gate on ────────────────────────

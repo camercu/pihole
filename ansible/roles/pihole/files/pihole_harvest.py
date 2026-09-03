@@ -26,6 +26,7 @@ import argparse
 import json
 import os
 import sys
+from enum import Enum
 from typing import NamedTuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -37,6 +38,50 @@ from pihole_sync_lists import (  # noqa: E402
     is_regex,
     normalize_groups,
 )
+
+
+class Kind(str, Enum):
+    """Every kind of row the config format knows a rule for.
+
+    Closed on purpose. Routing used to dispatch on substrings of a plain string
+    and reach the device rule by falling off the end, so a domain type a later
+    FTL adds was written into a group's clients.txt as if it were a device. A
+    kind outside this set now has no branch to fall into and is reported.
+
+    A str mixin so a Kind is its own wire format: it survives the JSON round
+    trip between --plan-adopt and --adopt and compares equal to the string it
+    comes back as. __str__ and __format__ are pinned to the value because a
+    plain Enum spells itself "Kind.ADLIST" in an f-string, and these names end
+    up in the report a person reads.
+    """
+    ADLIST = "adlist"
+    ALLOW_ADLIST = "allow adlist"
+    ALLOW_EXACT = "allow/exact"
+    ALLOW_REGEX = "allow/regex"
+    DENY_EXACT = "deny/exact"
+    DENY_REGEX = "deny/regex"
+    CLIENT = "client"
+
+    def __str__(self):
+        return self.value
+
+    __format__ = str.__format__
+
+
+# The shape a domain kind claims. The config files carry no exact/regex marker,
+# so this is what an entry's own text has to agree with to round-trip.
+_SHAPE = {Kind.ALLOW_EXACT: "exact", Kind.ALLOW_REGEX: "regex",
+          Kind.DENY_EXACT: "exact", Kind.DENY_REGEX: "regex"}
+
+# How the reconciler addresses one row of each kind. Borrowed rather than
+# rebuilt, so the two cannot disagree about a URL. Allow adlists are absent:
+# the config has no file for them, so one is never routed and never adopted.
+_ITEM_PATH = {Kind.ADLIST: sync.ADLIST,
+              Kind.CLIENT: sync.CLIENT,
+              Kind.ALLOW_EXACT: sync.allow_kind("exact"),
+              Kind.ALLOW_REGEX: sync.allow_kind("regex"),
+              Kind.DENY_EXACT: sync.deny_kind("exact"),
+              Kind.DENY_REGEX: sync.deny_kind("regex")}
 
 
 class Entry(NamedTuple):
@@ -106,7 +151,7 @@ def shape_matches(kind, entry):
     would come back as an exact match that no longer covers subdomains, and an
     exact entry that reads as a pattern would come back as a regex.
     """
-    return kind.split("/")[1] == ("regex" if is_regex(entry) else "exact")
+    return _SHAPE[kind] == ("regex" if is_regex(entry) else "exact")
 
 
 def _paths_for(e, id_to_name):
@@ -117,7 +162,10 @@ def _paths_for(e, id_to_name):
     assemble_desired builds, which is what makes a routed entry faithful.
     """
     kind, entry, gids = e.kind, e.entry, e.groups
-    if kind == "allow adlist":
+    if not isinstance(kind, Kind):
+        return [], (f"the config format has no rule for a {kind} entry, so "
+                    "there is no file this harvest could put it in")
+    if kind is Kind.ALLOW_ADLIST:
         return [], ("the config has no file for allow adlists; "
                     "allowlist-urls.txt fetches domains to allow, which is a "
                     "different mechanism")
@@ -133,24 +181,24 @@ def _paths_for(e, id_to_name):
     named = sorted(id_to_name[g] for g in gids if g != DEFAULT_GROUP)
     in_default = DEFAULT_GROUP in gids
 
-    if "/" in kind and not shape_matches(kind, entry):
+    if kind in _SHAPE and not shape_matches(kind, entry):
         derived = "regex" if is_regex(entry) else "exact"
         return [], (f"the config files carry no exact/regex marker and this "
-                    f"{kind.split('/')[1]} entry reads as {derived}, so the "
+                    f"{_SHAPE[kind]} entry reads as {derived}, so the "
                     f"reconciler would push it back as {derived}")
 
-    if kind == "adlist":
+    if kind is Kind.ADLIST:
         paths = ["adlists.txt"] if in_default else []
         return paths + [f"groups/{n}/adlists.txt" for n in named], None
 
-    if kind.startswith("allow/"):
+    if kind in (Kind.ALLOW_EXACT, Kind.ALLOW_REGEX):
         if named:
             return [], ("allowlists in the config apply network-wide, and this one "
                         + ("is also in " if in_default else "is scoped to ")
                         + ", ".join(named))
         return ["allow.list"], None
 
-    if kind.startswith("deny/"):
+    if kind in (Kind.DENY_EXACT, Kind.DENY_REGEX):
         if in_default and named:
             return [], ("this blocks network-wide as well as for "
                         + ", ".join(named) + ", and the config blocks domains per "
@@ -161,6 +209,7 @@ def _paths_for(e, id_to_name):
                         "should block it, or leave it to the adlists")
         return [f"groups/{n}/block.list" for n in named], None
 
+    # Kind.CLIENT — the only one left, because the enum is closed.
     if not in_default:
         return [], ("the config puts a device in its group and the default group; "
                     "this one is outside the default group, so recording it would "
@@ -185,13 +234,27 @@ def _rows(state):
                 row.get("comment") == MANAGED)
 
     for row in state.get("lists", []):
-        yield make("adlist", "address", row)
+        yield make(Kind.ADLIST, "address", row)
     for row in state.get("allow_lists", []):
-        yield make("allow adlist", "address", row)
+        yield make(Kind.ALLOW_ADLIST, "address", row)
     for row in state.get("domains", []):
-        yield make(f"{row['type']}/{row['kind']}", "domain", row)
+        yield make(_domain_kind(row), "domain", row)
     for row in state.get("clients", []):
-        yield make("client", "client", row)
+        yield make(Kind.CLIENT, "client", row)
+
+
+def _domain_kind(row):
+    """The Kind of a domain row, or FTL's own words for it if there is no rule.
+
+    Returned as the plain string it arrived as rather than coerced into a Kind
+    it does not match, so routing reports it instead of falling into whichever
+    rule happens to be reached last.
+    """
+    described = f"{row['type']}/{row['kind']}"
+    try:
+        return Kind(described)
+    except ValueError:
+        return described
 
 
 def plan_harvest(state):
@@ -330,13 +393,7 @@ def export_state():
 
 def _item_path(e):
     """The single-entry API path for one row, as the reconciler addresses it."""
-    if e.kind == "adlist":
-        return sync.ADLIST.item_path(e.entry)
-    if e.kind == "client":
-        return sync.CLIENT.item_path(e.entry)
-    type_, domain_kind = e.kind.split("/")
-    build = sync.allow_kind if type_ == "allow" else sync.deny_kind
-    return build(domain_kind).item_path(e.entry)
+    return _ITEM_PATH[e.kind].item_path(e.entry)
 
 
 def adopt_entries(planned):
@@ -355,7 +412,7 @@ def adopt_entries(planned):
         adopted = []
         for e in adoptable_now(planned, _fetch(sid)):
             body = {"comment": MANAGED, "groups": list(e.groups)}
-            if e.kind != "client":
+            if e.kind is not Kind.CLIENT:  # clients carry no enabled column
                 body["enabled"] = e.enabled
             st, resp = sync.api("PUT", _item_path(e), sid, body)
             if st not in (200, 201, 204):
@@ -378,13 +435,15 @@ def entries_to_json(entries):
 def entries_from_json(data):
     """Entry records from the JSON --plan-adopt wrote.
 
-    Group ids come back from JSON as a list, and a record that compares by value
-    has to be rebuilt as the tuple it was written as or nothing would ever match
-    and adoption would silently do nothing. Named fields rather than position so
-    a plan written by an older copy of this script fails loudly here instead of
-    landing its fields in the wrong slots.
+    Rebuilt as the types it was written from, not merely as things that compare
+    equal to them: group ids come back as a list, which no record would match,
+    and the kind comes back as a bare string, which answers no to the `is` the
+    shell asks of it. Named fields rather than position so a plan written by an
+    older copy of this script fails loudly here instead of landing its fields in
+    the wrong slots — as does a kind this script has no rule for.
     """
-    return [Entry(**{**d, "groups": tuple(d["groups"])}) for d in data]
+    return [Entry(**{**d, "kind": Kind(d["kind"]), "groups": tuple(d["groups"])})
+            for d in data]
 
 
 def read_json(source):
