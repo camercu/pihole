@@ -117,7 +117,7 @@
     group: root
     mode: "0755"
   loop:
-    - pihole_sync_lists.py
+    - pihole_deploy.py
     - pihole_mirror.py
 
 # A rename does not delete what it replaced, so an old copy would sit in PATH
@@ -159,7 +159,7 @@
 # CHANGED/error output stays visible.
 - name: Reconcile Pi-hole lists via API
   ansible.builtin.command:
-    cmd: /usr/local/bin/pihole_sync_lists.py
+    cmd: /usr/local/bin/pihole_deploy.py
   environment:
     PIHOLE_PASSWORD_FILE: /etc/pihole-secrets/api-password
     PIHOLE_DIR: /etc/pihole/managed

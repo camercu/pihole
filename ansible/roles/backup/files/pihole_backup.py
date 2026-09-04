@@ -29,7 +29,7 @@ def login():
     Contract: LET IT RAISE. A backup that can't reach or authenticate to the
     API must fail the systemd unit so the OnFailure= notifier fires — a silent
     skipped backup is worse than a loud one. Kept deliberately separate from
-    sync/smoke's login() (die-hard / soft-None), which suit their own jobs.
+    deploy/smoke's login() (die-hard / soft-None), which suit their own jobs.
     """
     if not PW:
         return ""  # no password set => API accepts unauthenticated calls
@@ -43,7 +43,7 @@ def login():
 
 
 def logout(sid):
-    """Release the API session seat (see pihole_sync_lists.logout)."""
+    """Release the API session seat (see pihole_deploy.logout)."""
     if not sid:
         return
     req = urllib.request.Request(API + f"/auth?sid={sid}", method="DELETE")

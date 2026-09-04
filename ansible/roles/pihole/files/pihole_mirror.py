@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Mirror what Pi-hole is holding back into the config files as code.
 
-The reconciler (pihole_sync_lists.py) pushes config files into Pi-hole and
+The reconciler (pihole_deploy.py) pushes config files into Pi-hole and
 deliberately leaves entries added by hand in the admin UI alone. Those entries
 are real configuration that no file records, so a rebuild from a fresh SD card
 loses them. Mirroring closes that loop: it reads live state through the FTL API
@@ -35,8 +35,8 @@ from enum import Enum
 from typing import NamedTuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import pihole_sync_lists as sync  # noqa: E402
-from pihole_sync_lists import (  # noqa: E402
+import pihole_deploy as deploy  # noqa: E402
+from pihole_deploy import (  # noqa: E402
     DEFAULT_GROUP,
     MANAGED,
     clean_lines,
@@ -81,12 +81,12 @@ _SHAPE = {Kind.ALLOW_EXACT: "exact", Kind.ALLOW_REGEX: "regex",
 # How the reconciler addresses one row of each kind. Borrowed rather than
 # rebuilt, so the two cannot disagree about a URL. Allow adlists are absent:
 # the config has no file for them, so one is never routed and never adopted.
-_ITEM_PATH = {Kind.ADLIST: sync.ADLIST,
-              Kind.CLIENT: sync.CLIENT,
-              Kind.ALLOW_EXACT: sync.allow_kind("exact"),
-              Kind.ALLOW_REGEX: sync.allow_kind("regex"),
-              Kind.DENY_EXACT: sync.deny_kind("exact"),
-              Kind.DENY_REGEX: sync.deny_kind("regex")}
+_ITEM_PATH = {Kind.ADLIST: deploy.ADLIST,
+              Kind.CLIENT: deploy.CLIENT,
+              Kind.ALLOW_EXACT: deploy.allow_kind("exact"),
+              Kind.ALLOW_REGEX: deploy.allow_kind("regex"),
+              Kind.DENY_EXACT: deploy.deny_kind("exact"),
+              Kind.DENY_REGEX: deploy.deny_kind("regex")}
 
 
 class Entry(NamedTuple):
@@ -455,9 +455,9 @@ COLLECTIONS = (("groups", "/groups", "groups"),
 def _fetch(sid):
     state = {}
     for key, path, response_key in COLLECTIONS:
-        st, body = sync.api("GET", path, sid)
+        st, body = deploy.api("GET", path, sid)
         if st != 200:
-            sync.die(f"GET {path} failed (HTTP {st}): {body}")
+            deploy.die(f"GET {path} failed (HTTP {st}): {body}")
         state[key] = body.get(response_key, [])
     return state
 
@@ -470,11 +470,11 @@ def export_state():
     repo edit, not a redeploy of the box's copy of this script. It also gives
     the drift check the managed entries, which a plan drops.
     """
-    sid = sync.login()
+    sid = deploy.login()
     try:
         return _fetch(sid)
     finally:
-        sync.logout(sid)
+        deploy.logout(sid)
 
 
 def _item_path(e):
@@ -493,7 +493,7 @@ def adopt_entries(planned):
     qualify is decided against a fresh look at live state, so this is safe to
     repeat and safe to run against a box edited since the plan.
     """
-    sid = sync.login()
+    sid = deploy.login()
     try:
         adopted = []
         ready, skipped = adoptable_now(planned, _fetch(sid))
@@ -501,13 +501,13 @@ def adopt_entries(planned):
             body = {"comment": MANAGED, "groups": list(e.groups)}
             if e.kind is not Kind.CLIENT:  # clients carry no enabled column
                 body["enabled"] = e.enabled
-            st, resp = sync.api("PUT", _item_path(e), sid, body)
+            st, resp = deploy.api("PUT", _item_path(e), sid, body)
             if st not in (200, 201, 204):
-                sync.die(f"adopting {e.kind} {e.entry!r} failed (HTTP {st}): {resp}")
+                deploy.die(f"adopting {e.kind} {e.entry!r} failed (HTTP {st}): {resp}")
             adopted.append(e)
         return adopted, skipped
     finally:
-        sync.logout(sid)
+        deploy.logout(sid)
 
 
 def entries_to_json(entries):

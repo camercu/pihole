@@ -168,7 +168,7 @@ def login():
     then fail loudly against a real box rather than crashing here.
 
     Contract: SOFT — never raises. A health check exists to turn every failure
-    (incl. bad auth) into a readable FAIL line, so it degrades where sync's
+    (incl. bad auth) into a readable FAIL line, so it degrades where the deploy's
     login() die()s and backup's login() raises. The three are intentionally
     not shared: the divergent error policy is the point."""
     if not PW:
@@ -181,7 +181,7 @@ def login():
 
 
 def logout(sid):
-    """Release the API session seat (see pihole_sync_lists.logout)."""
+    """Release the API session seat (see pihole_deploy.logout)."""
     if sid:
         _api("DELETE", "/auth", sid)
 

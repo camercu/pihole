@@ -16,7 +16,7 @@ def _load_gravity(pihole, tmp_path):
     cfg.mkdir()
     (cfg / "adlists.txt").write_text(pihole.sidecar.block_url + "\n",
                                      encoding="utf-8")
-    r = pihole.run_sync(cfg)
+    r = pihole.run_deploy(cfg)
     assert r.returncode == 0, r.stderr
 
 

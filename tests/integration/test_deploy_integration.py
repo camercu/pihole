@@ -1,10 +1,11 @@
-"""End-to-end tests: the sync script reconciling a real Pi-hole v6 container.
+"""End-to-end tests: the deploy script reconciling a real Pi-hole v6 container.
 
 Each test gets a clean Pi-hole (managed state wiped) via the ``pihole`` fixture,
 builds a config tree on disk, then runs the *actual* deployed script against the
 live FTL API and asserts the resulting server state.
 """
 import pytest
+from conftest import UI_COMMENT
 
 pytestmark = pytest.mark.integration
 
@@ -39,7 +40,7 @@ def test_full_reconcile_is_applied_then_idempotent(pihole, tmp_path):
         "groups/kids/clients.txt": "10.0.0.5\n",
     })
 
-    r = pihole.run_sync(cfg)
+    r = pihole.run_deploy(cfg)
     assert r.returncode == 0, r.stderr
     assert "CHANGED" in r.stdout
     assert "Rebuilding gravity" in r.stdout  # adlists changed -> gravity ran
@@ -67,28 +68,27 @@ def test_full_reconcile_is_applied_then_idempotent(pihole, tmp_path):
     assert set(client["groups"]) == {0, kids}  # its group AND the default group
 
     # Second run with identical config must be a no-op.
-    r2 = pihole.run_sync(cfg)
+    r2 = pihole.run_deploy(cfg)
     assert r2.returncode == 0, r2.stderr
     assert "no changes" in r2.stdout
     assert "CHANGED" not in r2.stdout
 
 
-def test_hand_added_collision_is_reported_and_left_untouched(pihole, tmp_path):
+def test_hand_added_collision_is_reported_and_left_untouched(pihole, ui, tmp_path):
     api = pihole.api
-    # A domain someone added by hand (comment != MANAGED) that config also wants.
-    st, j = api.post("/domains/deny/exact",
-                     {"domain": ["bad.example"], "comment": "added by hand",
-                      "enabled": True})
-    assert st in (200, 201), j
+    # Added through `ui` so it is removed afterwards. The shared fixture resets
+    # only managed rows, so a hand-added one left behind outlives its test and
+    # collides with whichever test creates that domain next.
+    ui.domain("bad.example", "deny")
     cfg = _cfg(tmp_path, {"groups/kids/block.list": "bad.example\n"})
 
-    r = pihole.run_sync(cfg)
+    r = pihole.run_deploy(cfg)
 
     assert r.returncode == 1  # collision surfaced, not silently swallowed
     assert "already exists as a hand-added entry" in r.stderr
-    # The hand-added entry keeps its own comment; sync did not seize it.
+    # The hand-added entry keeps its own comment; the deploy did not seize it.
     row = _row(api.domains(), "domain", "bad.example")
-    assert row["comment"] == "added by hand"
+    assert row["comment"] == UI_COMMENT
 
 
 def test_a_managed_entry_switched_off_by_hand_is_switched_back_on(pihole, tmp_path):
@@ -101,7 +101,7 @@ def test_a_managed_entry_switched_off_by_hand_is_switched_back_on(pihole, tmp_pa
     # hand-added one from an earlier test would collide here instead.
     domain = "switchedoff.example"
     cfg = _cfg(tmp_path, {"groups/kids/block.list": domain + "\n"})
-    assert pihole.run_sync(cfg).returncode == 0
+    assert pihole.run_deploy(cfg).returncode == 0
 
     row = _row(api.domains(), "domain", domain)
     st, j = api._call("PUT", "/domains/deny/exact/" + domain,
@@ -110,7 +110,7 @@ def test_a_managed_entry_switched_off_by_hand_is_switched_back_on(pihole, tmp_pa
     assert st in (200, 201, 204), f"switching it off by hand: {st} {j}"
     assert _row(api.domains(), "domain", domain)["enabled"] is False
 
-    r = pihole.run_sync(cfg)
+    r = pihole.run_deploy(cfg)
 
     assert r.returncode == 0, r.stderr
     assert "CHANGED" in r.stdout
@@ -126,7 +126,7 @@ def test_a_managed_allow_domain_switched_off_by_hand_is_switched_back_on(pihole,
     api = pihole.api
     domain = "switchedoffallow.example"
     cfg = _cfg(tmp_path, {"allow.list": domain + "\n"})
-    assert pihole.run_sync(cfg).returncode == 0
+    assert pihole.run_deploy(cfg).returncode == 0
 
     st, j = api._call("PUT", "/domains/allow/exact/" + domain,
                       {"comment": "managed by ansible", "enabled": False,
@@ -134,7 +134,7 @@ def test_a_managed_allow_domain_switched_off_by_hand_is_switched_back_on(pihole,
     assert st in (200, 201, 204), f"switching it off by hand: {st} {j}"
     assert _row(api.domains(), "domain", domain)["enabled"] is False
 
-    r = pihole.run_sync(cfg)
+    r = pihole.run_deploy(cfg)
 
     assert r.returncode == 0, r.stderr
     assert "CHANGED" in r.stdout
@@ -147,7 +147,7 @@ def test_converge_adds_reassigns_and_removes(pihole, tmp_path):
         "groups/kids/block.list": "keep.example\ndrop.example\n",
         "groups/kids/clients.txt": "10.0.0.9\n",
     })
-    r1 = pihole.run_sync(cfg)
+    r1 = pihole.run_deploy(cfg)
     assert r1.returncode == 0, r1.stderr
     kids = _gid(api, "kids")
     assert set(_row(api.clients(), "client", "10.0.0.9")["groups"]) == {0, kids}
@@ -158,7 +158,7 @@ def test_converge_adds_reassigns_and_removes(pihole, tmp_path):
     (cfg / "groups/teens").mkdir()
     (cfg / "groups/teens/clients.txt").write_text("10.0.0.9\n", encoding="utf-8")
 
-    r2 = pihole.run_sync(cfg)
+    r2 = pihole.run_deploy(cfg)
     assert r2.returncode == 0, r2.stderr
     assert "CHANGED" in r2.stdout
 

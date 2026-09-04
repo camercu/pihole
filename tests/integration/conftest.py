@@ -1,6 +1,6 @@
 """Integration harness: run the helper scripts against a real Pi-hole v6 container.
 
-These tests exercise the *deployed artifact* end-to-end — the sync script talks
+These tests exercise the *deployed artifact* end-to-end — the deploy script talks
 to a genuine FTL API, so they catch API-contract drift that the pure unit tests
 cannot. They are opt-in: set ``PIHOLE_IT=1`` to run them (CI does). Without it
 they skip, keeping ``pytest`` fast for the red-green loop and pre-commit.
@@ -33,11 +33,13 @@ PIHOLE_PORT = 8081  # host -> pihole :80
 FILES_PORT = 8000  # host -> fileserver :8000 (also reachable in-net as FILES_CT)
 
 MANAGED = "managed by ansible"
+# Any comment that is not MANAGED marks a row as hand-added.
+UI_COMMENT = "added in the UI"
 # Connection-level failures, as the scripts' tracebacks name them. FTL closes
 # sockets while it restarts DNS, so these mean "try again", not "the run failed".
 _DROPPED = ("ConnectionResetError", "RemoteDisconnected", "URLError")
 _ROOT = Path(__file__).resolve().parents[2]
-SYNC_SCRIPT = _ROOT / "ansible/roles/pihole/files/pihole_sync_lists.py"
+DEPLOY_SCRIPT = _ROOT / "ansible/roles/pihole/files/pihole_deploy.py"
 BACKUP_SCRIPT = _ROOT / "ansible/roles/backup/files/pihole_backup.py"
 SMOKE_SCRIPT = _ROOT / "ansible/roles/verify/files/pihole_smoke.py"
 MIRROR_SCRIPT = _ROOT / "ansible/roles/pihole/files/pihole_mirror.py"
@@ -219,7 +221,7 @@ class Sidecar:
     """The in-network HTTP server; hosts adlist/allowlist fixtures.
 
     ``block_url`` is resolvable by gravity (inside the container network);
-    ``allow_url`` is published to the host so the sync script (running here)
+    ``allow_url`` is published to the host so the deploy script (running here)
     can fetch it too.
     """
 
@@ -259,6 +261,51 @@ def _containers():
         _rt("network", "rm", NET, check=False)
         if os.environ.get("PIHOLE_IT_KEEP_LOGS"):
             print(logs)
+
+
+@pytest.fixture
+def ui(pihole):
+    """Adds entries the way a person would in the admin UI, and removes them after.
+
+    The shared fixture only resets *managed* state, which is exactly what the
+    mirror tests must not rely on — so anything added here is tracked and
+    deleted, keeping one test's hand-made entries out of the next one's export.
+    """
+    api = pihole.api
+    lists, domains, groups = [], [], []
+
+    class UI:
+        def group(self, name):
+            api.post("/groups", {"name": name, "comment": UI_COMMENT,
+                                 "enabled": True})
+            groups.append(name)
+            return next(g["id"] for g in api.groups() if g["name"] == name)
+
+        def adlist(self, address, gids=None):
+            # FTL takes the list type as a query parameter, not a body field.
+            st, body = api.post("/lists?type=block",
+                                {"address": [address], "comment": UI_COMMENT,
+                                 "enabled": True, "groups": gids or [0]})
+            assert st in (200, 201), f"adding adlist: {st} {body}"
+            lists.append(address)
+            return address
+
+        def domain(self, domain, type_, gids=None):
+            st, body = api.post(f"/domains/{type_}/exact",
+                                {"domain": [domain], "comment": UI_COMMENT,
+                                 "enabled": True, "groups": gids or [0]})
+            assert st in (200, 201), f"adding {type_} domain: {st} {body}"
+            domains.append({"item": domain, "type": type_, "kind": "exact"})
+            return domain
+
+    yield UI()
+
+    if domains:
+        api.post("/domains:batchDelete", domains)
+    if lists:
+        api.post("/lists:batchDelete", [{"item": a, "type": "block"} for a in lists])
+    for name in groups:
+        api._call("DELETE", "/groups/" + name)
 
 
 @pytest.fixture
@@ -302,9 +349,9 @@ class SimpleEnv:
             done = subprocess.run(cmd, env=env, text=True, capture_output=True)
         return done
 
-    def run_sync(self, config_dir):
-        """Run the real sync script as a subprocess against the container."""
-        return self._run(SYNC_SCRIPT, PIHOLE_DIR=str(config_dir))
+    def run_deploy(self, config_dir):
+        """Run the real deploy script as a subprocess against the container."""
+        return self._run(DEPLOY_SCRIPT, PIHOLE_DIR=str(config_dir))
 
     def run_mirror(self, *args):
         """Run the real mirror script as a subprocess against the container."""

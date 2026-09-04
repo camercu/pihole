@@ -11,56 +11,11 @@ mirroring it is the correct behaviour, not interference.
 import json
 
 import pytest
+from conftest import UI_COMMENT
 
 pytestmark = pytest.mark.integration
 
 MANAGED = "managed by ansible"
-UI_COMMENT = "added in the UI"
-
-
-@pytest.fixture
-def ui(pihole):
-    """Adds entries the way a person would in the admin UI, and removes them after.
-
-    The shared fixture only resets *managed* state, which is exactly what the
-    mirror tests must not rely on — so anything added here is tracked and
-    deleted, keeping one test's hand-made entries out of the next one's export.
-    """
-    api = pihole.api
-    lists, domains, groups = [], [], []
-
-    class UI:
-        def group(self, name):
-            api.post("/groups", {"name": name, "comment": UI_COMMENT,
-                                 "enabled": True})
-            groups.append(name)
-            return next(g["id"] for g in api.groups() if g["name"] == name)
-
-        def adlist(self, address, gids=None):
-            # FTL takes the list type as a query parameter, not a body field.
-            st, body = api.post("/lists?type=block",
-                                {"address": [address], "comment": UI_COMMENT,
-                                 "enabled": True, "groups": gids or [0]})
-            assert st in (200, 201), f"adding adlist: {st} {body}"
-            lists.append(address)
-            return address
-
-        def domain(self, domain, type_, gids=None):
-            st, body = api.post(f"/domains/{type_}/exact",
-                                {"domain": [domain], "comment": UI_COMMENT,
-                                 "enabled": True, "groups": gids or [0]})
-            assert st in (200, 201), f"adding {type_} domain: {st} {body}"
-            domains.append({"item": domain, "type": type_, "kind": "exact"})
-            return domain
-
-    yield UI()
-
-    if domains:
-        api.post("/domains:batchDelete", domains)
-    if lists:
-        api.post("/lists:batchDelete", [{"item": a, "type": "block"} for a in lists])
-    for name in groups:
-        api._call("DELETE", "/groups/" + name)
 
 
 def _export(pihole, tmp_path):
@@ -175,7 +130,7 @@ def test_an_adopted_entry_stops_colliding_with_the_reconciler(pihole, ui, tmp_pa
 
     # The whole point: reconciling from the captured file is now a clean no-op
     # instead of the collision the hand-added comment used to cause.
-    r = pihole.run_sync(cfg)
+    r = pihole.run_deploy(cfg)
     assert r.returncode == 0, r.stdout + r.stderr
     assert "no changes" in r.stdout
 

@@ -673,5 +673,5 @@ def test_the_helper_scripts_are_executable():
     # The mirror, adopt and verify playbooks run these straight from the repo
     # working tree, so the mode bit is behaviour, not housekeeping.
     files = pathlib.Path(h.__file__).parent
-    for name in ("pihole_mirror.py", "pihole_sync_lists.py"):
+    for name in ("pihole_mirror.py", "pihole_deploy.py"):
         assert os.access(files / name, os.X_OK), f"{name} is not executable"

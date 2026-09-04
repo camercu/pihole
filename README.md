@@ -140,7 +140,7 @@ Two layers, both run in [CI](.github/workflows/ci.yml) on every push:
   diffing, group membership, DNS-packet parsing, restic argv). Fast, no
   network: `just test`.
 - **Integration tests** start a **real Pi-hole v6 container** and drive the
-  *deployed* scripts against its live FTL API — proving the sync reconciler,
+  *deployed* scripts against its live FTL API — proving the list reconciler,
   the backup export/restore round trip, and the smoke checker actually work
   against Pi-hole, not a mock. They are opt-in (`PIHOLE_IT=1`) and need
   **docker or podman** on `PATH`; `just test-full` runs them (auto-skipped by
@@ -187,7 +187,7 @@ never edit tracked files (see `local.yml.example` for the full shape):
 - **Backup NAS** — `backup_nas_host`
 
 Edit, re-run the playbook (or `./setup.sh`), done. The pihole role reconciles
-lists into Pi-hole through its **REST API** (`pihole_sync_lists.py`): it adds
+lists into Pi-hole through its **REST API** (`pihole_deploy.py`): it adds
 what's missing, removes what it previously added but is no longer listed, and
 rebuilds gravity only when adlists actually change. It's declarative and
 idempotent — a no-op run makes no changes. A remote allowlist that fails to
