@@ -89,7 +89,16 @@ class Api:
         self.sid = None
         self.sid = self._login(password)
 
-    def _call(self, method, path, body=None):
+    def _call(self, method, path, body=None, timeout=30):
+        """One API call, waiting out FTL's restart window.
+
+        Every call the harness makes comes through here, so this is where the
+        rule belongs: a dropped connection means the DNS restart some earlier
+        test asked for has not finished, and the call has not happened yet.
+        Retrying it is not the same as ignoring a failure — an answer of any
+        status is returned immediately, and only a connection that never comes
+        back raises, so a genuinely dead API still fails the test.
+        """
         url = self.base + path
         if self.sid:
             url += ("&" if "?" in url else "?") + "sid=" + self.sid
@@ -98,16 +107,22 @@ class Api:
             url, data=data, method=method,
             headers={"Content-Type": "application/json",
                      "Accept": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=30) as r:
-                raw = r.read()
-                return r.status, (json.loads(raw) if raw else {})
-        except urllib.error.HTTPError as e:
-            raw = e.read()
+        deadline = time.time() + timeout
+        while True:
             try:
-                return e.code, json.loads(raw)
-            except json.JSONDecodeError:
-                return e.code, raw.decode("utf-8", "replace")
+                with urllib.request.urlopen(req, timeout=30) as r:
+                    raw = r.read()
+                    return r.status, (json.loads(raw) if raw else {})
+            except urllib.error.HTTPError as e:
+                raw = e.read()
+                try:
+                    return e.code, json.loads(raw)
+                except json.JSONDecodeError:
+                    return e.code, raw.decode("utf-8", "replace")
+            except OSError as e:  # URLError, ConnectionReset, RemoteDisconnected
+                if time.time() > deadline:
+                    raise AssertionError(f"API never came back: {e}") from e
+                time.sleep(0.25)
 
     def _login(self, password):
         st, j = self._call("POST", "/auth", {"password": password})
@@ -141,20 +156,8 @@ class Api:
         return self.get("/clients")["clients"]
 
     def wait_reachable(self, timeout=30):
-        """Block until the API answers again.
-
-        FTL drops in-flight connections while it restarts DNS, so a reset here
-        means "not back yet", not "broken".
-        """
-        deadline = time.time() + timeout
-        while True:
-            try:
-                self._call("GET", "/groups")
-                return
-            except OSError as e:  # URLError and ConnectionResetError both
-                if time.time() > deadline:
-                    raise AssertionError(f"API never came back: {e}") from e
-                time.sleep(0.25)
+        """Block until the API answers again; _call does the waiting."""
+        self._call("GET", "/groups", timeout=timeout)
 
     def wait_writable(self, timeout=30):
         """Block until FTL accepts a write again.
@@ -310,7 +313,11 @@ def ui(pihole):
 
 @pytest.fixture
 def pihole(_containers):
-    """Per-test clean Pi-hole: managed state wiped, fresh Api + Sidecar."""
+    """Per-test clean Pi-hole: managed state wiped, fresh Api + Sidecar.
+
+    A prior test's DNS restart can still be landing while this runs; _call
+    waits it out rather than failing setup with "this test is broken".
+    """
     api = Api(_containers, PASSWORD)
     api.wait_writable()  # absorb any gravity DB-swap left by a prior test
     api.reset_managed()
