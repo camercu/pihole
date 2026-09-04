@@ -89,7 +89,7 @@ def test_plan_membership_all_new():
 def test_managed_entry_switched_off_by_hand_is_planned_for_re_enabling():
     # A config file listing an entry says it is on, so a managed row toggled off
     # in the admin UI is drift the reconcile has to correct. Nothing else would:
-    # harvest skips rows the reconciler owns, so the block would stay off
+    # mirroring skips rows the reconciler owns, so the block would stay off
     # through every site.yml run and every rebuild.
     desired = s.assemble_desired([], [(2, [], ["bad.example"], [])])["deny_exact"]
     current = {"bad.example": s.Owned(frozenset({2}), False)}

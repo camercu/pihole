@@ -1,7 +1,7 @@
 ---
 # Capture changes made by hand in the admin UI back into this repo's config
 # files, so they survive a rebuild:
-#   nix-shell --run 'just harvest'   (or: ansible-playbook harvest.yml)
+#   nix-shell --run 'just mirror'   (or: ansible-playbook mirror.yml)
 # Reads live Pi-hole state and makes the files it owns under
 # ansible/roles/pihole/files/ say what the box holds — entries added in the UI
 # appear, entries deleted there go — naming anything the config format cannot
@@ -13,7 +13,7 @@
   tasks:
     - name: Export live Pi-hole state
       ansible.builtin.command:
-        cmd: /usr/local/bin/pihole_harvest.py --export
+        cmd: /usr/local/bin/pihole_mirror.py --export
       environment:
         PIHOLE_PASSWORD_FILE: /etc/pihole-secrets/api-password
       register: pihole_state
@@ -26,24 +26,24 @@
     - name: Merge the exported state into the repo config files
       ansible.builtin.command:
         cmd: >-
-          {{ playbook_dir }}/roles/pihole/files/pihole_harvest.py
+          {{ playbook_dir }}/roles/pihole/files/pihole_mirror.py
           --merge - --dir {{ playbook_dir }}/roles/pihole/files
         stdin: "{{ pihole_state.stdout }}"
       delegate_to: localhost
       become: false
-      register: pihole_harvest
-      changed_when: "'CHANGED' in pihole_harvest.stdout"
+      register: pihole_mirror
+      changed_when: "'CHANGED' in pihole_mirror.stdout"
       failed_when: false
 
     # Printed before the failure below, so the warnings explaining what could
     # not be captured are readable rather than buried in a task error dump.
     - name: Show what was captured
       ansible.builtin.debug:
-        msg: "{{ (pihole_harvest.stdout_lines + pihole_harvest.stderr_lines) | select | list }}"
+        msg: "{{ (pihole_mirror.stdout_lines + pihole_mirror.stderr_lines) | select | list }}"
 
     - name: Fail when anything is left unrecorded
       ansible.builtin.fail:
         msg: >-
           Some live settings could not be captured (see above). Record each one
           another way, or accept that a rebuild will not restore it.
-      when: pihole_harvest.rc != 0
+      when: pihole_mirror.rc != 0

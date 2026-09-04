@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
-"""Capture hand-made Pi-hole changes back into the config files as code.
+"""Mirror what Pi-hole is holding back into the config files as code.
 
 The reconciler (pihole_sync_lists.py) pushes config files into Pi-hole and
 deliberately leaves entries added by hand in the admin UI alone. Those entries
 are real configuration that no file records, so a rebuild from a fresh SD card
-loses them. Harvest closes that loop: it reads live state through the FTL API
-and works out which config file each hand-added entry belongs in, so the change
-becomes reviewable in `git diff` and survives the next rebuild.
+loses them. Mirroring closes that loop: it reads live state through the FTL API
+and works out which config file each entry belongs in, so the change becomes
+reviewable in `git diff` and survives the next rebuild.
+
+Mirror, not gather: a file this owns ends up listing what the box holds, so an
+entry deleted in the admin UI leaves the file too. Nothing else would take it
+out, and the next reconcile would put it back from the file that still named
+it — which is how deleting in the UI used to mean editing a file by hand.
 
 Faithfulness is the rule an entry has to pass to be routed: reconciling from the
 file it would land in reproduces that entry's current group set exactly. The
@@ -19,7 +24,7 @@ Shares MANAGED, DEFAULT_GROUP and normalize_groups with the reconciler by
 importing them: the two scripts are halves of one ownership contract, and a
 second definition of "managed" could drift out of agreement with the first.
 
-Structure: plan_harvest and the helpers below are pure and unit-tested;
+Structure: plan_mirror and the helpers below are pure and unit-tested;
 everything touching the network or filesystem is the thin shell beneath them.
 """
 import argparse
@@ -103,7 +108,7 @@ class Entry(NamedTuple):
 
 
 class Plan(NamedTuple):
-    """What harvesting live state would write.
+    """What mirroring live state would write.
 
     files:      config path (relative to the config root) -> the entries the box
                 holds for that path, which is what the file should end up
@@ -149,7 +154,7 @@ def round_trips(entry):
     The files use '#' for comments and ignore surrounding whitespace, so an
     entry containing either comes back as something else — and, because
     presence is judged after that stripping, would be appended afresh by every
-    harvest while the reconciler pushed the truncated form.
+    mirror run while the reconciler pushed the truncated form.
     """
     return clean_lines(entry) == [entry]
 
@@ -175,7 +180,7 @@ def _paths_for(e, id_to_name):
     kind, entry, gids = e.kind, e.entry, e.groups
     if not isinstance(kind, Kind):
         return [], (f"the config format has no rule for a {kind} entry, so "
-                    "there is no file this harvest could put it in")
+                    "there is no file this mirror could put it in")
     if kind is Kind.ALLOW_ADLIST:
         return [], ("the config has no file for allow adlists; "
                     "allowlist-urls.txt fetches domains to allow, which is a "
@@ -235,7 +240,7 @@ def _rows(state):
     """(Entry, whether the reconciler already owns it) for every live row.
 
     The one place the raw API shape is read, so the record every later decision
-    compares is built the same way whether it came from a harvest or from the
+    compares is built the same way whether it came from a mirror run or from the
     second look adoption takes.
     """
     def make(kind, field, row):
@@ -268,7 +273,7 @@ def _domain_kind(row):
         return described
 
 
-def plan_harvest(state):
+def plan_mirror(state):
     """Route every live entry to the config file that should list it (pure).
 
     `state` is the raw API shape: {"groups", "lists", "domains", "clients"}.
@@ -350,7 +355,7 @@ def merge_lines(existing, wanted, prune=False):
     With prune, a line carrying an entry the box no longer holds is dropped —
     which is how deleting something in the admin UI reaches the files instead of
     being undone by the next reconcile. Returning None for an unchanged file
-    keeps a harvest that found nothing out of `git diff`.
+    keeps a mirror run that found nothing out of `git diff`.
     """
     wanted_set = set(wanted)
     kept, present, dropped = [], set(), False
@@ -390,7 +395,7 @@ class Skipped(NamedTuple):
     """A planned entry that was not handed over, and whether that is a problem.
 
     stale says the plan no longer describes the box, which is what makes the run
-    exit non-zero and asks for another harvest. A row the reconciler already
+    exit non-zero and asks for another mirror run. A row the reconciler already
     owns is not stale — that is a repeat run finding its work done. Carried as a
     field because the exit status once turned on a substring of `reason`, so
     rewording the sentence would have failed every repeat `just adopt`.
@@ -437,7 +442,7 @@ def adoptable_now(planned, state):
 
 # ── I/O shell ───────────────────────────────────────────────────────────────
 # Each API collection is keyed in the response by the same name we store it
-# under, so one table drives both the fetch and the shape plan_harvest reads.
+# under, so one table drives both the fetch and the shape plan_mirror reads.
 # (state key, API path, key in the response). Block and allow adlists share one
 # response key, so the state key has to differ from it for the two to coexist.
 COLLECTIONS = (("groups", "/groups", "groups"),
@@ -553,7 +558,7 @@ def read_present(root, paths):
     return present
 
 
-# The config files harvest routes live entries into, and so the only ones it may
+# The config files the mirror routes live entries into, and so the only ones it may
 # prune. allowlist-urls.txt is deliberately absent: it names remote lists to
 # fetch rather than entries Pi-hole holds, so no live row corresponds to a line
 # in it and every one of them would look deleted.
@@ -562,7 +567,7 @@ _OWNED_GROUP_FILES = ("adlists.txt", "block.list", "clients.txt")
 
 
 def owned_config_files(root):
-    """The existing config files harvest both writes and prunes, sorted.
+    """The existing config files the mirror both writes and prunes, sorted.
 
     Pruning has to visit a file even when live state routes nothing to it: a
     file whose every entry was deleted in the admin UI is exactly the one with
@@ -582,10 +587,10 @@ def owned_config_files(root):
 def pending_changes(root, plan):
     """[(path, new text)] for every config file the plan would alter.
 
-    Deciding and writing are separate so the drift check can ask what a harvest
+    Deciding and writing are separate so the drift check can ask what a mirror
     would capture while leaving the working tree exactly as it found it. A file
     that already lists exactly what the box holds is absent from the result,
-    which is what keeps an unchanged harvest out of `git diff`.
+    which is what keeps an unchanged mirror run out of `git diff`.
     """
     pending = []
     for path in sorted(set(plan.files) | set(owned_config_files(root))):
@@ -637,7 +642,7 @@ def groups_without_config(root, plan):
 # uncaught-error status and 2 is argparse's usage error — so no verdict can be
 # mistaken for one of them, or one of them for a verdict.
 OK = 0            # nothing left unrecorded
-DRIFT = 3         # settings a harvest would capture are missing from the files
+DRIFT = 3         # settings a mirror run would capture are missing from the files
 UNRECORDABLE = 4  # what is left is only what the config format cannot express
 
 
@@ -646,7 +651,7 @@ def report(root, plan, paths, dry_run):
 
     Returns the exit status (OK / DRIFT / UNRECORDABLE above). The two non-zero
     ones are kept apart because they call for different things: drift has a fix
-    — run a harvest — while a setting the config cannot express has none, and a
+    — run a mirror — while a setting the config cannot express has none, and a
     check that stays red for something unfixable is one people learn to ignore.
     Under dry_run an uncaptured change is drift; capturing it is a success.
     """
@@ -668,10 +673,10 @@ def report(root, plan, paths, dry_run):
         print("CHANGED" if paths else "no changes")
     unrecordable = len(plan.unroutable) + len(empty)
     # Counted apart because they are different things: one is a number of files
-    # a harvest would write, the other a number of settings it cannot.
+    # a mirror run would write, the other a number of settings it cannot.
     parts = []
     if dry_run and paths:
-        parts.append(f"{len(paths)} config file(s) a harvest would write")
+        parts.append(f"{len(paths)} config file(s) a mirror run would write")
     if unrecordable:
         parts.append(f"{unrecordable} setting(s) no config file can record")
     if parts:
@@ -724,9 +729,9 @@ def main(argv=None):
         if stale:
             print(f"ERROR: {len(stale)} planned entr"
                   f"{'y' if len(stale) == 1 else 'ies'} no longer match the box; "
-                  "run `just harvest` again", file=sys.stderr)
+                  "run `just mirror` again", file=sys.stderr)
         return DRIFT if stale else OK
-    plan = plan_harvest(read_json(args.merge or args.check or args.plan_adopt))
+    plan = plan_mirror(read_json(args.merge or args.check or args.plan_adopt))
     if args.plan_adopt:
         paths = {path for _, paths in plan.routed for path in paths}
         planned = plan_adopt(plan.routed, read_present(args.dir, paths))

@@ -40,7 +40,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 SYNC_SCRIPT = _ROOT / "ansible/roles/pihole/files/pihole_sync_lists.py"
 BACKUP_SCRIPT = _ROOT / "ansible/roles/backup/files/pihole_backup.py"
 SMOKE_SCRIPT = _ROOT / "ansible/roles/verify/files/pihole_smoke.py"
-HARVEST_SCRIPT = _ROOT / "ansible/roles/pihole/files/pihole_harvest.py"
+MIRROR_SCRIPT = _ROOT / "ansible/roles/pihole/files/pihole_mirror.py"
 
 
 def _detect_runtime():
@@ -306,9 +306,9 @@ class SimpleEnv:
         """Run the real sync script as a subprocess against the container."""
         return self._run(SYNC_SCRIPT, PIHOLE_DIR=str(config_dir))
 
-    def run_harvest(self, *args):
-        """Run the real harvest script as a subprocess against the container."""
-        return self._run(HARVEST_SCRIPT, args)
+    def run_mirror(self, *args):
+        """Run the real mirror script as a subprocess against the container."""
+        return self._run(MIRROR_SCRIPT, args)
 
     def run_backup(self, restic_env):
         """Run the real backup script; restic_env carries the RESTIC_* settings."""

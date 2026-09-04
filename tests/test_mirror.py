@@ -1,6 +1,6 @@
-"""Unit tests for the pure decision logic in pihole_harvest.py.
+"""Unit tests for the pure decision logic in pihole_mirror.py.
 
-Harvest is the inverse of the reconciler: it reads live Pi-hole state and works
+Mirroring is the inverse of the reconciler: it reads live Pi-hole state and works
 out which config file each hand-added entry belongs in. The invariant these
 tests pin down is *faithfulness* — an entry is only routed into a config file
 when re-running the reconciler from that file would reproduce the entry's
@@ -10,7 +10,7 @@ import json
 import os
 import pathlib
 
-import pihole_harvest as h
+import pihole_mirror as h
 import pytest
 
 MANAGED = "managed by ansible"
@@ -47,14 +47,14 @@ def _client(client, groups, comment=None):
 # ── ownership ───────────────────────────────────────────────────────────────
 def test_a_managed_entry_already_in_its_file_is_not_written_again(tmp_path):
     # The file is what put it there, so it is part of what the file should list
-    # — but appending it again on every harvest would duplicate the line.
+    # — but appending it again on every mirror run would duplicate the line.
     cfg = tmp_path / "config"
     cfg.mkdir()
     (cfg / "adlists.txt").write_text("https://a.example/list.txt\n",
                                      encoding="utf-8")
     state = _state(lists=[_adlist("https://a.example/list.txt", [0], MANAGED)])
 
-    plan = h.plan_harvest(state)
+    plan = h.plan_mirror(state)
 
     assert plan.files == {"adlists.txt": ["https://a.example/list.txt"]}
     assert plan.unroutable == []
@@ -63,20 +63,20 @@ def test_a_managed_entry_already_in_its_file_is_not_written_again(tmp_path):
 
 def test_hand_added_default_group_adlist_goes_to_top_level_adlists():
     state = _state(lists=[_adlist("https://a.example/list.txt", [0])])
-    assert h.plan_harvest(state).files == {
+    assert h.plan_mirror(state).files == {
         "adlists.txt": ["https://a.example/list.txt"]}
 
 
 def test_adlist_with_no_groups_is_treated_as_default_group():
     # FTL reports a default-only entry as either [] or [0].
     state = _state(lists=[_adlist("https://a.example/list.txt", [])])
-    assert h.plan_harvest(state).files == {
+    assert h.plan_mirror(state).files == {
         "adlists.txt": ["https://a.example/list.txt"]}
 
 
 def test_group_scoped_adlist_goes_to_that_groups_file():
     state = _state(lists=[_adlist("https://k.example/list.txt", [2])])
-    assert h.plan_harvest(state).files == {
+    assert h.plan_mirror(state).files == {
         "groups/kids/adlists.txt": ["https://k.example/list.txt"]}
 
 
@@ -84,7 +84,7 @@ def test_adlist_in_default_and_a_group_is_written_to_both_files():
     # assemble_desired unions the same URL from both files onto one row, so
     # writing both reproduces the live group set exactly.
     state = _state(lists=[_adlist("https://s.example/list.txt", [0, 2])])
-    assert h.plan_harvest(state).files == {
+    assert h.plan_mirror(state).files == {
         "adlists.txt": ["https://s.example/list.txt"],
         "groups/kids/adlists.txt": ["https://s.example/list.txt"],
     }
@@ -93,18 +93,18 @@ def test_adlist_in_default_and_a_group_is_written_to_both_files():
 # ── allow domains: the config expresses these network-wide only ─────────────
 def test_hand_added_allow_domain_goes_to_allow_list():
     state = _state(domains=[_domain("ok.example", "allow", "exact", [0])])
-    assert h.plan_harvest(state).files == {"allow.list": ["ok.example"]}
+    assert h.plan_mirror(state).files == {"allow.list": ["ok.example"]}
 
 
 def test_allow_regex_goes_to_allow_list_verbatim():
     pattern = r"(\.|^)twimg\.example$"
     state = _state(domains=[_domain(pattern, "allow", "regex", [0])])
-    assert h.plan_harvest(state).files == {"allow.list": [pattern]}
+    assert h.plan_mirror(state).files == {"allow.list": [pattern]}
 
 
 def test_group_scoped_allow_domain_is_reported_not_narrowed():
     state = _state(domains=[_domain("ok.example", "allow", "exact", [2])])
-    plan = h.plan_harvest(state)
+    plan = h.plan_mirror(state)
     assert plan.files == {}
     assert [item for item, _ in plan.unroutable] == ["allow/exact ok.example"]
     assert "network-wide" in plan.unroutable[0][1]
@@ -113,7 +113,7 @@ def test_group_scoped_allow_domain_is_reported_not_narrowed():
 # ── deny domains: the config expresses these per group only ─────────────────
 def test_group_scoped_deny_domain_goes_to_that_groups_block_list():
     state = _state(domains=[_domain("bad.example", "deny", "exact", [2])])
-    assert h.plan_harvest(state).files == {
+    assert h.plan_mirror(state).files == {
         "groups/kids/block.list": ["bad.example"]}
 
 
@@ -121,7 +121,7 @@ def test_deny_domain_in_default_group_is_reported_not_silently_narrowed():
     # Routing this to one group's block.list would stop blocking it for
     # everyone else — a behaviour change the user never asked for.
     state = _state(domains=[_domain("bad.example", "deny", "exact", [0, 2])])
-    plan = h.plan_harvest(state)
+    plan = h.plan_mirror(state)
     assert plan.files == {}
     assert [item for item, _ in plan.unroutable] == ["deny/exact bad.example"]
 
@@ -130,7 +130,7 @@ def test_deny_domain_blocked_network_wide_only_says_so():
     # No group to name: the config simply has no network-wide blocklist, and
     # the reason has to say that rather than trail off.
     state = _state(domains=[_domain("bad.example", "deny", "exact", [0])])
-    plan = h.plan_harvest(state)
+    plan = h.plan_mirror(state)
     assert plan.files == {}
     assert "no network-wide blocklist" in plan.unroutable[0][1]
 
@@ -138,7 +138,7 @@ def test_deny_domain_blocked_network_wide_only_says_so():
 def test_deny_domain_spanning_two_groups_is_written_to_both():
     pattern = r"(\.|^)bad\.example$"
     state = _state(domains=[_domain(pattern, "deny", "regex", [2, 3])])
-    assert h.plan_harvest(state).files == {
+    assert h.plan_mirror(state).files == {
         "groups/kids/block.list": [pattern],
         "groups/guests/block.list": [pattern],
     }
@@ -147,15 +147,15 @@ def test_deny_domain_spanning_two_groups_is_written_to_both():
 # ── clients: the config always places a device in its group AND default ─────
 def test_client_in_group_and_default_goes_to_that_groups_clients_file():
     state = _state(clients=[_client("10.0.0.5", [0, 2])])
-    assert h.plan_harvest(state).files == {
+    assert h.plan_mirror(state).files == {
         "groups/kids/clients.txt": ["10.0.0.5"]}
 
 
 def test_client_without_the_default_group_is_reported_not_widened():
-    # Harvesting this would hand the device the default group's adlists on the
+    # Mirroring this would hand the device the default group's adlists on the
     # next reconcile — more blocking than the user configured.
     state = _state(clients=[_client("10.0.0.5", [2])])
-    plan = h.plan_harvest(state)
+    plan = h.plan_mirror(state)
     assert plan.files == {}
     assert [item for item, _ in plan.unroutable] == ["client 10.0.0.5"]
 
@@ -164,17 +164,17 @@ def test_client_in_the_default_group_only_is_reported():
     # The config has no top-level clients file: group membership is the only
     # thing it can say about a device.
     state = _state(clients=[_client("10.0.0.5", [0])])
-    plan = h.plan_harvest(state)
+    plan = h.plan_mirror(state)
     assert plan.files == {}
     assert [item for item, _ in plan.unroutable] == ["client 10.0.0.5"]
 
 
 # ── things the config cannot say ────────────────────────────────────────────
-def test_disabled_entry_is_reported_not_harvested_as_enabled():
-    # The reconciler adds everything enabled; harvesting a UI-disabled entry
+def test_disabled_entry_is_reported_not_mirrored_as_enabled():
+    # The reconciler adds everything enabled; mirroring a UI-disabled entry
     # would switch it back on at the next run.
     state = _state(lists=[_adlist("https://a.example/list.txt", [0], enabled=False)])
-    plan = h.plan_harvest(state)
+    plan = h.plan_mirror(state)
     assert plan.files == {}
     assert [item for item, _ in plan.unroutable] == ["adlist https://a.example/list.txt"]
     assert "disabled" in plan.unroutable[0][1]
@@ -182,7 +182,7 @@ def test_disabled_entry_is_reported_not_harvested_as_enabled():
 
 def test_entry_in_an_unknown_group_id_is_reported():
     state = _state(lists=[_adlist("https://a.example/list.txt", [99])])
-    plan = h.plan_harvest(state)
+    plan = h.plan_mirror(state)
     assert plan.files == {}
     assert "99" in plan.unroutable[0][1]
 
@@ -192,7 +192,7 @@ def test_domain_of_a_kind_the_config_has_no_rule_for_is_reported():
     # this router does not know — one a later FTL adds — was written into a
     # group's clients.txt as if it were a device.
     state = _state(domains=[_domain("x.example", "sinkhole", "exact", [0, 2])])
-    plan = h.plan_harvest(state)
+    plan = h.plan_mirror(state)
     assert plan.files == {}  # not "groups/kids/clients.txt": ["x.example"]
     assert [item for item, _ in plan.unroutable] == ["sinkhole/exact x.example"]
     assert "device" not in plan.unroutable[0][1]  # nor rejected as one
@@ -209,18 +209,18 @@ def test_every_adoptable_kind_has_a_single_entry_api_path():
 
 # ── group directories ───────────────────────────────────────────────────────
 def test_hand_created_group_yields_a_group_directory():
-    assert h.plan_harvest(_state()).group_dirs == ["guests"]
+    assert h.plan_mirror(_state()).group_dirs == ["guests"]
 
 
 def test_group_dir_is_listed_for_any_group_an_entry_routes_into():
     state = _state(domains=[_domain("bad.example", "deny", "exact", [2])])
-    plan = h.plan_harvest(state)
+    plan = h.plan_mirror(state)
     assert plan.group_dirs == ["guests", "kids"]
 
 
 def test_default_group_never_becomes_a_directory():
     state = _state(groups=[{"id": 0, "name": "Default", "comment": None}])
-    assert h.plan_harvest(state).group_dirs == []
+    assert h.plan_mirror(state).group_dirs == []
 
 
 # ── determinism ─────────────────────────────────────────────────────────────
@@ -228,11 +228,11 @@ def test_lines_within_a_file_are_sorted_and_deduped():
     state = _state(lists=[_adlist("https://b.example/l.txt", [0]),
                           _adlist("https://a.example/l.txt", [0]),
                           _adlist("https://b.example/l.txt", [0])])
-    assert h.plan_harvest(state).files["adlists.txt"] == [
+    assert h.plan_mirror(state).files["adlists.txt"] == [
         "https://a.example/l.txt", "https://b.example/l.txt"]
 
 
-# ── merging harvested lines into an existing config file ────────────────────
+# ── merging mirrored lines into an existing config file ────────────────────
 def test_merge_appends_a_new_entry_to_an_existing_file():
     assert h.merge_lines("a.example\n", ["b.example"]) == "a.example\nb.example\n"
 
@@ -275,7 +275,7 @@ def test_merge_dedupes_repeated_entries_in_one_call():
     assert h.merge_lines("", ["a.example", "a.example"]) == "a.example\n"
 
 
-# ── deciding what a harvest would change, before changing it ────────────────
+# ── deciding what a mirror run would change, before changing it ────────────────
 def test_pending_reports_the_full_text_a_file_would_be_given(tmp_path):
     (tmp_path / "adlists.txt").write_text("a.example\n", encoding="utf-8")
     plan = h.Plan(files={"adlists.txt": ["b.example"]}, group_dirs=[],
@@ -387,7 +387,7 @@ def test_regex_domain_that_reads_as_a_plain_domain_is_reported():
     # from the text. A keyword regex like this has no metacharacters, so it
     # would come back as an exact match and stop blocking subdomains.
     state = _state(domains=[_domain("doubleclick", "deny", "regex", [2])])
-    plan = h.plan_harvest(state)
+    plan = h.plan_mirror(state)
     assert plan.files == {}
     assert [item for item, _ in plan.unroutable] == ["deny/regex doubleclick"]
     assert "regex" in plan.unroutable[0][1]
@@ -395,34 +395,34 @@ def test_regex_domain_that_reads_as_a_plain_domain_is_reported():
 
 def test_allow_regex_that_reads_as_a_plain_domain_is_reported():
     state = _state(domains=[_domain("doubleclick", "allow", "regex", [0])])
-    assert h.plan_harvest(state).files == {}
+    assert h.plan_mirror(state).files == {}
 
 
 def test_regex_domain_with_metacharacters_still_routes():
     pattern = r"(\.|^)ads\.example$"
     state = _state(domains=[_domain(pattern, "deny", "regex", [2])])
-    assert h.plan_harvest(state).files == {"groups/kids/block.list": [pattern]}
+    assert h.plan_mirror(state).files == {"groups/kids/block.list": [pattern]}
 
 
 def test_exact_domain_that_reads_as_a_regex_is_reported():
     # The mirror case: the reconciler would push this back as a regex.
     state = _state(domains=[_domain("ads*.example", "deny", "exact", [2])])
-    assert h.plan_harvest(state).files == {}
+    assert h.plan_mirror(state).files == {}
 
 
 def test_entry_with_a_comment_character_is_reported():
     # merge_lines judges presence after stripping '#', so an entry containing
-    # one would be appended again by every harvest and never read back whole.
+    # one would be appended again by every mirror run and never read back whole.
     url = "https://a.example/l.txt#frag"
     state = _state(lists=[_adlist(url, [0])])
-    plan = h.plan_harvest(state)
+    plan = h.plan_mirror(state)
     assert plan.files == {}
     assert [item for item, _ in plan.unroutable] == [f"adlist {url}"]
 
 
 def test_entry_with_surrounding_whitespace_is_reported():
     state = _state(lists=[_adlist(" https://a.example/l.txt ", [0])])
-    assert h.plan_harvest(state).files == {}
+    assert h.plan_mirror(state).files == {}
 
 
 # ── group names that cannot be directories ──────────────────────────────────
@@ -430,7 +430,7 @@ def test_group_named_with_a_path_traversal_is_reported_not_written():
     groups = GROUPS + [{"id": 4, "name": "../../evil", "comment": None}]
     state = _state(groups=groups,
                    domains=[_domain("x.example", "deny", "exact", [4])])
-    plan = h.plan_harvest(state)
+    plan = h.plan_mirror(state)
     assert plan.files == {}
     assert plan.group_dirs == ["guests"]
     assert any("../../evil" in item for item, _ in plan.unroutable)
@@ -440,14 +440,14 @@ def test_group_named_with_a_slash_is_reported():
     groups = GROUPS + [{"id": 4, "name": "a/b", "comment": None}]
     state = _state(groups=groups,
                    domains=[_domain("x.example", "deny", "exact", [4])])
-    plan = h.plan_harvest(state)
+    plan = h.plan_mirror(state)
     assert plan.files == {}
     assert "a/b" not in plan.group_dirs
 
 
 def test_group_named_dot_is_reported():
     groups = GROUPS + [{"id": 4, "name": ".", "comment": None}]
-    plan = h.plan_harvest(_state(groups=groups))
+    plan = h.plan_mirror(_state(groups=groups))
     assert "." not in plan.group_dirs
     assert any("'.'" in item for item, _ in plan.unroutable)
 
@@ -461,7 +461,7 @@ def test_allow_type_adlist_is_reported_rather_than_ignored():
     state["allow_lists"] = [{"address": "https://a.example/allow.txt",
                              "type": "allow", "groups": [0], "comment": None,
                              "enabled": True}]
-    plan = h.plan_harvest(state)
+    plan = h.plan_mirror(state)
     assert plan.files == {}
     assert [item for item, _ in plan.unroutable] == [
         "allow adlist https://a.example/allow.txt"]
@@ -471,7 +471,7 @@ def test_plan_records_the_row_it_decided_against():
     # Adoption happens later, against a second look at live state; without the
     # record the plan was made from there is nothing to re-check.
     state = _state(lists=[_adlist("https://a.example/l.txt", [0, 2])])
-    assert h.plan_harvest(state).routed == [
+    assert h.plan_mirror(state).routed == [
         (_entry("adlist", "https://a.example/l.txt", [0, 2]),
          ["adlists.txt", "groups/kids/adlists.txt"])]
 
@@ -489,7 +489,7 @@ def test_entry_still_matching_the_plan_is_adopted():
 
 
 def test_entry_regrouped_since_the_plan_is_left_alone():
-    # Someone moved it in the UI between harvest and adopt: the config files
+    # Someone moved it in the UI between mirroring and adopt: the config files
     # record the old group set, so handing it over would narrow it silently.
     planned = _entry("adlist", "https://a.example/l.txt", [0])
     state = _live(lists=[_adlist("https://a.example/l.txt", [0, 2])])
@@ -508,12 +508,12 @@ def test_a_planned_entry_left_alone_is_named_with_the_reason():
 
 
 def test_entry_disabled_since_the_plan_is_left_alone():
-    # Someone switched it off in the UI between harvest and adopt. Harvest
+    # Someone switched it off in the UI between mirroring and adopt. Mirroring
     # refuses to route a disabled row at all, so adopting one would stamp it as
     # the reconciler's while it is off — and the reconciler sets enabled only on
     # add, so nothing would ever switch it back on.
-    at_harvest = _live(lists=[_adlist("https://a.example/l.txt", [0])])
-    planned = h.plan_adopt(h.plan_harvest(at_harvest).routed,
+    at_mirror = _live(lists=[_adlist("https://a.example/l.txt", [0])])
+    planned = h.plan_adopt(h.plan_mirror(at_mirror).routed,
                            {"adlists.txt": {"https://a.example/l.txt"}})
     switched_off = _live(lists=[_adlist("https://a.example/l.txt", [0],
                                         enabled=False)])
@@ -547,7 +547,7 @@ def test_a_plan_survives_the_json_round_trip_between_deciding_and_doing():
     state = _live(lists=[_adlist("https://a.example/l.txt", [0, 2])])
     recorded = {"adlists.txt": {"https://a.example/l.txt"},
                 "groups/kids/adlists.txt": {"https://a.example/l.txt"}}
-    planned = h.plan_adopt(h.plan_harvest(state).routed, recorded)
+    planned = h.plan_adopt(h.plan_mirror(state).routed, recorded)
 
     carried = h.entries_from_json(json.loads(json.dumps(h.entries_to_json(planned))))
 
@@ -596,7 +596,7 @@ def test_entry_deleted_in_the_admin_ui_is_removed_from_its_config_file(tmp_path)
         "# our blocklists\nhttps://kept.example/l.txt\n")
 
 
-def test_a_file_harvest_cannot_route_to_is_never_pruned(tmp_path):
+def test_a_file_the_mirror_cannot_route_to_is_never_pruned(tmp_path):
     # allowlist-urls.txt names remote lists to fetch, not entries Pi-hole holds,
     # so no live row corresponds to a line here and every one would look deleted.
     cfg = tmp_path / "config"
@@ -632,7 +632,7 @@ def test_check_exits_zero_when_every_setting_is_already_recorded(tmp_path):
 
 
 def test_check_exits_drift_when_a_setting_could_be_captured(tmp_path):
-    # What verify.yml fails on: `just harvest` would write this into the files.
+    # What verify.yml fails on: `just mirror` would write this into the files.
     cfg = tmp_path / "config"
     cfg.mkdir()
     state = _only_default_group(lists=[_adlist("https://a.example/l.txt", [0])])
@@ -654,7 +654,7 @@ def test_check_exits_unrecordable_when_no_outstanding_setting_can_be_captured(tm
 def test_no_verdict_shares_a_status_with_a_run_that_never_started():
     # argparse exits 2 on a usage error, so a mistyped flag once landed on the
     # value meaning "capturable drift" and verify.yml told the operator to run a
-    # harvest that would find nothing.
+    # mirror run that would find nothing.
     with pytest.raises(SystemExit) as exit_info:
         h.main(["--no-such-flag"])
     assert exit_info.value.code not in (h.OK, h.DRIFT, h.UNRECORDABLE)
@@ -670,8 +670,8 @@ def test_check_that_cannot_read_its_state_fails_rather_than_reporting_in_sync(tm
 
 
 def test_the_helper_scripts_are_executable():
-    # The harvest, adopt and verify playbooks run these straight from the repo
+    # The mirror, adopt and verify playbooks run these straight from the repo
     # working tree, so the mode bit is behaviour, not housekeeping.
     files = pathlib.Path(h.__file__).parent
-    for name in ("pihole_harvest.py", "pihole_sync_lists.py"):
+    for name in ("pihole_mirror.py", "pihole_sync_lists.py"):
         assert os.access(files / name, os.X_OK), f"{name} is not executable"

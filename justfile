@@ -30,10 +30,10 @@ test-full:
 # Capture changes made by hand in the admin UI into the config files as code —
 # additions and deletions both, so the UI can be where you work.
 # Writes into ansible/roles/pihole/files/; review with `git diff` before committing.
-harvest:
-    cd ansible && ansible-playbook harvest.yml
+mirror:
+    cd ansible && ansible-playbook mirror.yml
 
-# Hand entries captured by `just harvest` over to the reconciler, so it manages
-# them from now on. Run after committing the harvest diff.
+# Hand entries captured by `just mirror` over to the reconciler, so it manages
+# them from now on. Run after committing the mirror diff.
 adopt:
     cd ansible && ansible-playbook adopt.yml

@@ -2,7 +2,7 @@
 # Hand entries added by hand in the admin UI over to the reconciler, once the
 # config files record them:
 #   nix-shell --run 'just adopt'   (or: ansible-playbook adopt.yml)
-# Run this after `just harvest` and after committing the diff it produced. Only
+# Run this after `just mirror` and after committing the diff it produced. Only
 # entries every config file already lists are handed over, so an entry still
 # unrecorded is left alone rather than reconciled away. Ownership changes by
 # rewriting the entry's comment: nothing is deleted, re-added, or re-resolved.
@@ -12,7 +12,7 @@
   tasks:
     - name: Export live Pi-hole state
       ansible.builtin.command:
-        cmd: /usr/local/bin/pihole_harvest.py --export
+        cmd: /usr/local/bin/pihole_mirror.py --export
       environment:
         PIHOLE_PASSWORD_FILE: /etc/pihole-secrets/api-password
       register: pihole_state
@@ -24,7 +24,7 @@
     - name: Decide which entries the config files already record
       ansible.builtin.command:
         cmd: >-
-          {{ playbook_dir }}/roles/pihole/files/pihole_harvest.py
+          {{ playbook_dir }}/roles/pihole/files/pihole_mirror.py
           --plan-adopt - --dir {{ playbook_dir }}/roles/pihole/files
         stdin: "{{ pihole_state.stdout }}"
       delegate_to: localhost
@@ -40,7 +40,7 @@
     - name: Decide the same from the config files deployed on the box
       ansible.builtin.command:
         cmd: >-
-          /usr/local/bin/pihole_harvest.py
+          /usr/local/bin/pihole_mirror.py
           --plan-adopt - --dir /etc/pihole/managed
         stdin: "{{ pihole_state.stdout }}"
       register: pihole_adoptable_deployed
@@ -57,7 +57,7 @@
 
     - name: Hand those entries to the reconciler
       ansible.builtin.command:
-        cmd: /usr/local/bin/pihole_harvest.py --adopt -
+        cmd: /usr/local/bin/pihole_mirror.py --adopt -
         stdin: "{{ pihole_adoptable.stdout }}"
       environment:
         PIHOLE_PASSWORD_FILE: /etc/pihole-secrets/api-password
@@ -71,12 +71,12 @@
 
     # 3 is the one status meaning the plan went stale. 1 and 2 are the script
     # failing outright (auth, an HTTP error from the PUT, bad arguments), which
-    # another harvest would not fix and must not be described as if it would.
+    # another mirror run would not fix and must not be described as if it would.
     - name: Fail when a planned entry no longer matches the box
       ansible.builtin.fail:
         msg: >-
           Some entries could not be handed over (see above). The box changed
-          between harvest and adopt; run `just harvest` again.
+          between mirroring and adopt; run `just mirror` again.
       when: pihole_adopt.rc == 3
 
     - name: Fail when handing entries over did not finish

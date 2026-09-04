@@ -18,7 +18,7 @@
     # never written down — so the check runs on every verify.
     - name: Export live Pi-hole state
       ansible.builtin.command:
-        cmd: /usr/local/bin/pihole_harvest.py --export
+        cmd: /usr/local/bin/pihole_mirror.py --export
       environment:
         PIHOLE_PASSWORD_FILE: /etc/pihole-secrets/api-password
       register: pihole_state
@@ -28,7 +28,7 @@
     - name: Check the config files against live state
       ansible.builtin.command:
         cmd: >-
-          {{ playbook_dir }}/roles/pihole/files/pihole_harvest.py
+          {{ playbook_dir }}/roles/pihole/files/pihole_mirror.py
           --check - --dir {{ playbook_dir }}/roles/pihole/files
         stdin: "{{ pihole_state.stdout }}"
       delegate_to: localhost
@@ -55,6 +55,6 @@
         msg: >-
           Pi-hole carries settings this repo does not record, or the drift check
           could not run (exit {{ pihole_drift.rc }}). If it is drift, run
-          `just harvest`, review the diff, and commit.
+          `just mirror`, review the diff, and commit.
       when: pihole_drift.rc not in [0, 4]
       tags: [verify, drift]

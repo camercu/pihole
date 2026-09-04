@@ -42,7 +42,7 @@ ansible/
   inventory.yml             # the Pi: host, ssh user
   site.yml                  # runs the roles in order
   verify.yml                # post-deploy smoke test (run against the live host)
-  harvest.yml               # capture changes made in the admin UI back into the files
+  mirror.yml                # make the config files match what the box holds
   adopt.yml                 # hand captured entries over to the reconciler
   group_vars/all/
     defaults.yml            # generic per-site facts (overridden by local.yml)
@@ -114,7 +114,7 @@ nix-shell --run 'cd ansible && ansible-playbook site.yml --check --diff'
 
 # Capture changes made by hand in the admin UI into the config files,
 # then (after committing the diff) let the reconciler manage them:
-nix-shell --run 'just harvest'
+nix-shell --run 'just mirror'
 nix-shell --run 'just adopt'
 
 # One role only (tags: common, unbound, pihole, maintenance):
@@ -198,25 +198,25 @@ non-zero so you notice — remove the hand-added copy to let the role manage it.
 
 Ownership is total: a file listing an entry says which groups it belongs to *and*
 that it is switched on. Toggling a managed row off in the admin UI is undone on
-the next run, because nothing else would put it back — harvest skips rows the
+the next run, because nothing else would put it back — mirroring skips rows the
 reconciler owns, so a managed block left off would survive every run and every
 rebuild while the files went on claiming it was in force. To switch one off for
-good, delete it in the admin UI and run `just harvest` — the deletion is
+good, delete it in the admin UI and run `just mirror` — the deletion is
 captured, so you never hand-edit the files to undo something you did in the UI.
 
-### Capturing changes made in the admin UI
+### Mirroring changes made in the admin UI
 
 The reconciler pushes files into Pi-hole and leaves entries added by hand alone,
 so a blocklist you add in the UI works but no file records it — a rebuild from a
-fresh SD card loses it. `just harvest` closes that loop: it reads live Pi-hole
+fresh SD card loses it. `just mirror` closes that loop: it reads live Pi-hole
 state and writes what the config format can express into
 `ansible/roles/pihole/files/`, ready to review with `git diff` and commit. It
 never changes the Pi.
 
-Capture runs both ways, so the admin UI can be where you work. A file harvest
-owns ends up listing what the box actually holds: entries you added appear,
+Capture runs both ways, so the admin UI can be where you work. A file the
+mirror owns ends up listing what the box actually holds: entries you added appear,
 entries you deleted go, and your comments, blank lines and ordering are left
-exactly where they were. Only the files harvest can route into are touched —
+exactly where they were. Only the files the mirror can route into are touched —
 `allowlist-urls.txt` names remote lists to fetch rather than entries Pi-hole
 holds, so it is never pruned. If the Pi answers with nothing at all (not yet
 provisioned, or its database wiped), nothing is pruned either: that is a box
@@ -227,7 +227,7 @@ An entry is captured only when reconciling from the file it lands in would
 reproduce that entry's current group set exactly. The UI can say things the
 config cannot — an allowlist scoped to one group, a device outside the default
 group, a disabled row — and capturing those anyway would change what Pi-hole
-blocks, so harvest names each one with the reason and exits non-zero instead.
+blocks, so the mirror names each one with the reason and exits non-zero instead.
 Record those another way, or accept that a rebuild won't restore them.
 
 A captured entry still carries its hand-added comment on the box, so the next
@@ -241,7 +241,7 @@ rewriting that comment. Nothing is deleted or re-resolved — the row stays put
 and only changes hands — and an entry no file records is left alone, so adopting
 can't turn into a way to lose settings.
 
-The loop, then, is: change what you like in the admin UI, `just harvest`,
+The loop, then, is: change what you like in the admin UI, `just mirror`,
 review the diff and commit, `just adopt`.
 
 `verify.yml` runs the same comparison and fails when the box carries a setting
@@ -376,7 +376,7 @@ Change the allowed subnet via `hardening_lan_subnet` in `roles/hardening/default
 - **Sync exits non-zero with a collision warning** — a list entry was also added
   by hand in the admin UI. Remove the hand-added copy so the role can manage it.
 - **`verify.yml` reports drift** — Pi-hole carries settings no config file
-  records. `just harvest` writes them into the files; review with `git diff`
+  records. `just mirror` writes them into the files; review with `git diff`
   and commit.
 - **A scheduled job failed** — `systemctl list-timers`, then
   `journalctl -u maint-<job>.service` (or `pihole-backup.service`). With a

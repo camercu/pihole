@@ -105,11 +105,11 @@
     mode: "0644"
     directory_mode: "0755"
 
-# Both scripts keep their module filenames because the harvester imports the
+# Both scripts keep their module filenames because the mirror imports the
 # reconciler for the ownership contract they share ("managed by ansible", the
 # default-group rule), and Python only imports a module whose filename is an
 # identifier. They land in the same directory so that import resolves.
-- name: Deploy list reconciler and harvester
+- name: Deploy list reconciler and mirror
   ansible.builtin.copy:
     src: "{{ item }}"
     dest: "/usr/local/bin/{{ item }}"
@@ -118,12 +118,17 @@
     mode: "0755"
   loop:
     - pihole_sync_lists.py
-    - pihole_harvest.py
+    - pihole_mirror.py
 
-- name: Remove the reconciler's former hyphenated path
+# A rename does not delete what it replaced, so an old copy would sit in PATH
+# still working while the repo described a name that had moved on.
+- name: Remove the scripts' former paths
   ansible.builtin.file:
-    path: /usr/local/bin/pihole-sync-lists.py
+    path: "/usr/local/bin/{{ item }}"
     state: absent
+  loop:
+    - pihole-sync-lists.py # before the filename had to be importable
+    - pihole_harvest.py # before the name said it writes in both directions
 
 # The API password goes to a root-only file, not the reconciler's environment.
 # Passing it via environment: would leak it in Ansible output at -vvv and in

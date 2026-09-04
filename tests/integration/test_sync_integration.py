@@ -93,7 +93,7 @@ def test_hand_added_collision_is_reported_and_left_untouched(pihole, tmp_path):
 
 def test_a_managed_entry_switched_off_by_hand_is_switched_back_on(pihole, tmp_path):
     # A config file listing a domain says it is blocked. Switching the row off in
-    # the admin UI leaves it managed, so harvest skips it as already recorded and
+    # the admin UI leaves it managed, so mirroring skips it as already recorded and
     # the drift check calls the box in sync — the block would stay off through
     # every run and every rebuild if the reconcile did not assert it.
     api = pihole.api

@@ -1,4 +1,4 @@
-"""End-to-end tests: harvesting hand-made changes off a real Pi-hole container.
+"""End-to-end tests: mirroring hand-made changes off a real Pi-hole container.
 
 The unit tests pin the routing rules against a hand-written state dict; these
 prove the export really reads that shape out of a live FTL API, so a change to
@@ -6,7 +6,7 @@ Pi-hole's response format is caught here rather than on the user's box.
 
 Assertions look for the entries a test created rather than for exact file
 contents: a stock Pi-hole already carries an unmanaged adlist of its own, and
-harvesting it is the correct behaviour, not interference.
+mirroring it is the correct behaviour, not interference.
 """
 import json
 
@@ -23,7 +23,7 @@ def ui(pihole):
     """Adds entries the way a person would in the admin UI, and removes them after.
 
     The shared fixture only resets *managed* state, which is exactly what the
-    harvest tests must not rely on — so anything added here is tracked and
+    mirror tests must not rely on — so anything added here is tracked and
     deleted, keeping one test's hand-made entries out of the next one's export.
     """
     api = pihole.api
@@ -64,7 +64,7 @@ def ui(pihole):
 
 
 def _export(pihole, tmp_path):
-    r = pihole.run_harvest("--export")
+    r = pihole.run_mirror("--export")
     assert r.returncode == 0, r.stderr
     path = tmp_path / "state.json"
     path.write_text(r.stdout, encoding="utf-8")
@@ -95,7 +95,7 @@ def test_hand_added_entries_land_in_the_config_files(pihole, ui, tmp_path):
 
     cfg = tmp_path / "config"
     cfg.mkdir()
-    merge = pihole.run_harvest("--merge", str(state), "--dir", str(cfg))
+    merge = pihole.run_mirror("--merge", str(state), "--dir", str(cfg))
     assert "CHANGED" in merge.stdout, merge.stderr
 
     assert "https://hand.example/l.txt" in (cfg / "adlists.txt").read_text()
@@ -103,7 +103,7 @@ def test_hand_added_entries_land_in_the_config_files(pihole, ui, tmp_path):
     assert (cfg / "groups/guests/block.list").read_text() == "bad.example\n"
 
     # A second merge of the same state finds everything recorded already.
-    again = pihole.run_harvest("--merge", str(state), "--dir", str(cfg))
+    again = pihole.run_mirror("--merge", str(state), "--dir", str(cfg))
     assert "no changes" in again.stdout
 
 
@@ -115,14 +115,14 @@ def test_an_entry_deleted_in_the_admin_ui_leaves_the_config_file(pihole, ui,
     _, state = _export(pihole, tmp_path)
     cfg = tmp_path / "config"
     cfg.mkdir()
-    assert "CHANGED" in pihole.run_harvest("--merge", str(state),
+    assert "CHANGED" in pihole.run_mirror("--merge", str(state),
                                            "--dir", str(cfg)).stdout
     assert address in (cfg / "adlists.txt").read_text()
 
     pihole.api.post("/lists:batchDelete", [{"item": address, "type": "block"}])
     _, after = _export(pihole, tmp_path)
 
-    assert "CHANGED" in pihole.run_harvest("--merge", str(after),
+    assert "CHANGED" in pihole.run_mirror("--merge", str(after),
                                            "--dir", str(cfg)).stdout
     assert address not in (cfg / "adlists.txt").read_text()
 
@@ -142,8 +142,8 @@ def test_a_managed_entry_already_recorded_is_not_written_twice(pihole, tmp_path)
     cfg = tmp_path / "config"
     cfg.mkdir()
     (cfg / "adlists.txt").write_text(address + "\n", encoding="utf-8")
-    pihole.run_harvest("--merge", str(state), "--dir", str(cfg))
-    pihole.run_harvest("--merge", str(state), "--dir", str(cfg))
+    pihole.run_mirror("--merge", str(state), "--dir", str(cfg))
+    pihole.run_mirror("--merge", str(state), "--dir", str(cfg))
 
     assert (cfg / "adlists.txt").read_text().count(address) == 1
 
@@ -153,19 +153,19 @@ def test_an_adopted_entry_stops_colliding_with_the_reconciler(pihole, ui, tmp_pa
     _, state = _export(pihole, tmp_path)
     cfg = tmp_path / "config"
     cfg.mkdir()
-    assert "CHANGED" in pihole.run_harvest("--merge", str(state),
+    assert "CHANGED" in pihole.run_mirror("--merge", str(state),
                                            "--dir", str(cfg)).stdout
     # Narrow the captured file to this test's own entry, leaving the stock
     # adlist Pi-hole ships unmanaged and out of the way.
     (cfg / "adlists.txt").write_text(address + "\n", encoding="utf-8")
 
-    plan = pihole.run_harvest("--plan-adopt", str(state), "--dir", str(cfg))
+    plan = pihole.run_mirror("--plan-adopt", str(state), "--dir", str(cfg))
     assert plan.returncode == 0, plan.stderr
     assert address in plan.stdout
     pairs = tmp_path / "adoptable.json"
     pairs.write_text(plan.stdout, encoding="utf-8")
 
-    adopt = pihole.run_harvest("--adopt", str(pairs))
+    adopt = pihole.run_mirror("--adopt", str(pairs))
     assert "CHANGED" in adopt.stdout, adopt.stderr
 
     row = next(x for x in pihole.api.lists() if x["address"] == address)
@@ -188,7 +188,7 @@ def test_an_unrecorded_entry_is_not_handed_over(pihole, ui, tmp_path):
     empty = tmp_path / "empty"
     empty.mkdir()
 
-    plan = pihole.run_harvest("--plan-adopt", str(state), "--dir", str(empty))
+    plan = pihole.run_mirror("--plan-adopt", str(state), "--dir", str(empty))
     assert plan.returncode == 0, plan.stderr
     assert address not in plan.stdout
 
@@ -211,7 +211,7 @@ def test_an_allow_adlist_is_reported_rather_than_passed_over(pihole, tmp_path):
 
         cfg = tmp_path / "config"
         cfg.mkdir()
-        check = pihole.run_harvest("--check", str(path), "--dir", str(cfg))
+        check = pihole.run_mirror("--check", str(path), "--dir", str(cfg))
         assert address in check.stderr
         assert "allow adlist" in check.stderr
     finally:
