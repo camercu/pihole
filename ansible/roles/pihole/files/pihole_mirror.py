@@ -593,6 +593,27 @@ def box_holds_any_of(plan, path, listed):
     return bool(set(plan.files.get(path, ())) & listed)
 
 
+def removed_counts(root, pending):
+    """path -> how many entries the new text drops, read before it is written.
+
+    Comments and blank lines survive a prune untouched, so a section that has
+    lost every entry keeps its heading and goes on describing what is no longer
+    below it. The file cannot say that; the report can, and a reviewer reading
+    `git diff` has the number rather than having to count the minus lines.
+    """
+    counts = {}
+    for path, text in pending:
+        full = os.path.join(root, path)
+        old = set()
+        if os.path.exists(full):
+            with open(full, encoding="utf-8") as f:
+                old = set(clean_lines(f.read()))
+        gone = len(old - set(clean_lines(text)))
+        if gone:
+            counts[path] = gone
+    return counts
+
+
 def refused_prunes(root, plan):
     """[(path, how many entries)] for each file whose deletions were declined.
 
@@ -682,7 +703,7 @@ UNRECORDABLE = 4  # what is left is only what the config format cannot express
 UNPRUNED = 5      # a file lists entries, and the box holds none of them
 
 
-def report(root, plan, paths, dry_run, refused=()):
+def report(root, plan, paths, dry_run, refused=(), removed=None):
     """Print what was captured (or would be) and what needs a human decision.
 
     `refused` comes from the caller because it has to be read before anything
@@ -695,8 +716,11 @@ def report(root, plan, paths, dry_run, refused=()):
     check that stays red for something unfixable is one people learn to ignore.
     Under dry_run an uncaptured change is drift; capturing it is a success.
     """
+    removed = removed or {}
     for path in paths:
-        print(("  ! " if dry_run else "  ~ ") + path)
+        gone = removed.get(path)
+        tail = f" ({gone} removed)" if gone else ""
+        print(("  ! " if dry_run else "  ~ ") + path + tail)
 
     for label, reason in plan.unroutable:
         print(f"WARN: {label} was not captured: {reason}.", file=sys.stderr)
@@ -793,11 +817,12 @@ def main(argv=None):
         return OK
     pending = pending_changes(args.dir, plan, force_prune=args.force_prune)
     refused = () if args.force_prune else refused_prunes(args.dir, plan)
+    removed = removed_counts(args.dir, pending)
     if args.check:
         return report(args.dir, plan, [path for path, _ in pending],
-                      dry_run=True, refused=refused)
+                      dry_run=True, refused=refused, removed=removed)
     return report(args.dir, plan, write_changes(args.dir, pending),
-                  dry_run=False, refused=refused)
+                  dry_run=False, refused=refused, removed=removed)
 
 
 if __name__ == "__main__":

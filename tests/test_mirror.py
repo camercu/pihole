@@ -631,6 +631,23 @@ def test_nothing_is_pruned_from_a_file_the_box_was_never_deployed_from(tmp_path)
     assert "https://three.example/l.txt" in kept
 
 
+def test_the_report_says_how_many_entries_each_file_lost(tmp_path, capsys):
+    # Comments survive a prune, so a section whose every entry went still shows
+    # its heading and the file reads as though the entries are there. The count
+    # is what tells a reviewer of the diff that the heading now means nothing.
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "adlists.txt").write_text(
+        "# ads\nhttps://gone.example/l.txt\nhttps://also-gone.example/l.txt\n"
+        "https://kept.example/l.txt\n", encoding="utf-8")
+    state = _only_default_group(
+        lists=[_adlist("https://kept.example/l.txt", [0], MANAGED)])
+
+    _merge(tmp_path, state, cfg)
+
+    assert "adlists.txt (2 removed)" in capsys.readouterr().out
+
+
 def test_refusing_to_prune_is_reported_and_fails_the_run(tmp_path, capsys):
     # Silence would leave the operator believing the files now match the box.
     cfg = tmp_path / "config"
