@@ -242,8 +242,10 @@ was deliberate.
 > by hand and writes them into `allow.list`. Until that is fixed, check the
 > `allow.list` hunk of a mirror diff before committing it, and drop any block
 > that is just a remote list's contents — committing them forks that list into
-> this repo, and it stops tracking upstream. `git diff` is still the gate — nothing reaches the Pi until you
-commit and run `just deploy`.
+> this repo, and it stops tracking upstream.
+
+`git diff` is still the gate — nothing reaches the Pi until you commit and run
+`just deploy`.
 
 An entry is captured only when reconciling from the file it lands in would
 reproduce that entry's current group set exactly. The UI can say things the
