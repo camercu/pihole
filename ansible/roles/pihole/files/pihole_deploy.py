@@ -389,6 +389,28 @@ def logout(sid):
         api("DELETE", "/auth", sid)
 
 
+_TOP_LEVEL_FILES = ("adlists.txt", "allow.list", "allowlist-urls.txt")
+
+
+def config_root_missing(root):
+    """True if the config root is not there to be read at all."""
+    return not os.path.isdir(root)
+
+
+def missing_inputs(root):
+    """The top-level config files that are not there, sorted.
+
+    A file that is absent has not said "nothing"; it has said nothing. The two
+    read the same to read_path and the difference is every entry it would have
+    listed, so the caller is told which files it never saw and declines to
+    delete on their say-so — the same rule fetch_domains already applies to a
+    remote list that would not download. Group files are not here: a group
+    directory is allowed to carry only the files it needs.
+    """
+    return sorted(n for n in _TOP_LEVEL_FILES
+                  if not os.path.exists(os.path.join(root, n)))
+
+
 def read_path(path):
     """Cleaned lines of a config file, or [] if it doesn't exist."""
     if not os.path.exists(path):
@@ -554,6 +576,13 @@ def reconcile_groups(sid, desired_names):
 
 
 def main():
+    if config_root_missing(DIR):
+        die(f"config root {DIR!r} does not exist; refusing to reconcile, since "
+            "every managed entry would read as deleted")
+    absent = missing_inputs(DIR)
+    for name in absent:
+        print(f"WARN: {name} is not in {DIR}; entries it would list are left "
+              "alone rather than removed.", file=sys.stderr)
     sid = login()
     try:
         groups = discover_groups(GROUPS_DIR)
@@ -565,9 +594,11 @@ def main():
             allow_exact += fetch_domains(url)
         # allow_exact draws on remote lists; only remove exact entries if every
         # source loaded (fetch_ok). Regex doesn't fetch, so removal is always safe.
+        allow_readable = not {"allow.list", "allowlist-urls.txt"} & set(absent)
         reconcile_membership(sid, allow_kind("exact"), network_wide(allow_exact),
-                             allow_remove=fetch_ok)
-        reconcile_membership(sid, allow_kind("regex"), network_wide(allow_regex))
+                             allow_remove=fetch_ok and allow_readable)
+        reconcile_membership(sid, allow_kind("regex"), network_wide(allow_regex),
+                             allow_remove="allow.list" not in absent)
 
         # Read each group's files, then assemble the desired group-scoped state (the
         # product decisions live in assemble_desired, unit-tested). Block adlists span
@@ -580,7 +611,8 @@ def main():
             for name, path in groups
         ]
         desired = assemble_desired(read_file("adlists.txt"), group_inputs)
-        reconcile_membership(sid, ADLIST, desired["adlists"])
+        reconcile_membership(sid, ADLIST, desired["adlists"],
+                             allow_remove="adlists.txt" not in absent)
         reconcile_membership(sid, deny_kind("exact"), desired["deny_exact"])
         reconcile_membership(sid, deny_kind("regex"), desired["deny_regex"])
         reconcile_membership(sid, CLIENT, desired["clients"])

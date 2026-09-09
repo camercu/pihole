@@ -178,6 +178,28 @@ def test_a_database_that_never_unlocks_gives_back_ftls_own_answer():
     assert deploy.retry_transient(lambda: _LOCKED, sleep=lambda _: None) == _LOCKED
 
 
+def test_a_missing_config_root_is_not_an_empty_one(tmp_path):
+    # Pointing PIHOLE_DIR at a path that is not there deleted every managed
+    # entry and reported success, because absent read as empty everywhere.
+    assert deploy.config_root_missing(str(tmp_path / "nope"))
+    assert not deploy.config_root_missing(str(tmp_path))
+
+
+def test_a_config_file_that_is_not_there_is_named_not_assumed_empty(tmp_path):
+    # A file renamed away, half a checkout, a bad deploy: the entries it would
+    # have listed are unknown, not deleted.
+    (tmp_path / "adlists.txt").write_text("https://a.example/l.txt\n",
+                                          encoding="utf-8")
+    assert deploy.missing_inputs(str(tmp_path)) == ["allow.list",
+                                                    "allowlist-urls.txt"]
+
+
+def test_a_complete_config_root_is_missing_nothing(tmp_path):
+    for name in ("adlists.txt", "allow.list", "allowlist-urls.txt"):
+        (tmp_path / name).write_text("", encoding="utf-8")
+    assert deploy.missing_inputs(str(tmp_path)) == []
+
+
 def test_a_settled_answer_is_not_retried_at_all():
     calls = []
 
