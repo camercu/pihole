@@ -128,6 +128,16 @@
   register: pihole_group_deployed
   changed_when: false
 
+# A source tree that could not be read is not a source tree describing nothing:
+# treating it as empty would remove every group from the box, which is the same
+# mistake this role was just fixed for on the local config files.
+- name: Fail when the group config in this repo could not be read
+  ansible.builtin.fail:
+    msg: >-
+      {{ pihole_group_source.skipped_paths | join(', ') }} could not be read, so
+      it is unknown which groups this repo describes; refusing to remove any.
+  when: pihole_group_source.skipped_paths | default({}) | length > 0
+
 # Files before directories, longest path first, so a group's contents go before
 # the directory holding them and `file` never meets a non-empty one.
 - name: Remove group config the repo no longer describes
