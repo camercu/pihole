@@ -120,18 +120,14 @@ class Plan(NamedTuple):
                 different kinds can share a name across files
     protected:  entries the box holds that no file rule places. They exist, so a
                 line carrying one is never pruned wherever it already sits.
-    prunable:   whether live state described the box at all. An unprovisioned or
-                unreachable box answers with nothing, and reading that as "the
-                operator deleted everything" would empty the config in one run.
     """
     files: dict
     group_dirs: list
     unroutable: list
     routed: list
-    # Defaults describe a plan that knows of nothing to protect and nothing to
-    # prune, so a caller building one by hand cannot delete by omission.
+    # Defaults describe a plan that knows of nothing to protect, so a caller
+    # building one by hand cannot delete by omission.
     protected: frozenset = frozenset()
-    prunable: bool = False
 
 
 _UNUSABLE_GROUP_NAMES = {"", ".", ".."}
@@ -288,10 +284,9 @@ def plan_mirror(state):
     """
     id_to_name = {g["id"]: g["name"] for g in state.get("groups", [])}
     files, unroutable, routed, touched = {}, [], [], set()
-    protected, seen_any = set(), False
+    protected = set()
 
     for e, managed in _rows(state):
-        seen_any = True
         if managed:
             paths, reason = _paths_for(e, id_to_name)
             # It exists, so whatever the files say about it, nothing may delete
@@ -339,7 +334,7 @@ def plan_mirror(state):
             touched.add(name)
     return Plan(files={p: sorted(v) for p, v in files.items()},
                 group_dirs=sorted(touched), unroutable=unroutable, routed=routed,
-                protected=protected, prunable=seen_any)
+                protected=protected)
 
 
 def merge_lines(existing, wanted, prune=False):
@@ -584,7 +579,44 @@ def owned_config_files(root):
     return sorted(found)
 
 
-def pending_changes(root, plan):
+def box_holds_any_of(plan, path, listed):
+    """True if the box still holds at least one entry this config file lists.
+
+    An entry a file lists and the box does not hold means one of two opposite
+    things — someone deleted it, or this box was never given it — and reading
+    the second as the first is what empties a config in one run. The two look
+    identical entry by entry, but not file by file: a box that ever took this
+    file still holds something from it, while a box that never did holds none
+    of it. Ownership is deliberately not consulted, because the comment that
+    records it is free text an operator can type in the admin UI.
+    """
+    return bool(set(plan.files.get(path, ())) & listed)
+
+
+def refused_prunes(root, plan):
+    """[(path, how many entries)] for each file whose deletions were declined.
+
+    Named rather than passed over in silence: the operator is owed the
+    difference between "the files now match the box" and "the files claim
+    things this box has never been told about", and only one of those is
+    fixed by committing the diff.
+    """
+    refused = []
+    for path in sorted(set(plan.files) | set(owned_config_files(root))):
+        full = os.path.join(root, path)
+        if not os.path.exists(full):
+            continue
+        with open(full, encoding="utf-8") as f:
+            listed = set(clean_lines(f.read()))
+        if box_holds_any_of(plan, path, listed):
+            continue
+        absent = listed - set(plan.files.get(path, ())) - plan.protected
+        if absent:
+            refused.append((path, len(absent)))
+    return refused
+
+
+def pending_changes(root, plan, force_prune=False):
     """[(path, new text)] for every config file the plan would alter.
 
     Deciding and writing are separate so the drift check can ask what a mirror
@@ -602,9 +634,12 @@ def pending_changes(root, plan):
         # A protected entry stays only where it already is: it exists on the box
         # but no rule places it, so keeping the line is right and adding one
         # would be inventing a placement the routing declined to choose.
+        listed = set(clean_lines(existing))
         wanted = set(plan.files.get(path, ()))
-        wanted |= plan.protected & set(clean_lines(existing))
-        merged = merge_lines(existing, sorted(wanted), prune=plan.prunable)
+        wanted |= plan.protected & listed
+        merged = merge_lines(existing, sorted(wanted),
+                             prune=force_prune
+                             or box_holds_any_of(plan, path, listed))
         if merged is not None:
             pending.append((path, merged))
     return pending
@@ -644,12 +679,17 @@ def groups_without_config(root, plan):
 OK = 0            # nothing left unrecorded
 DRIFT = 3         # settings a mirror run would capture are missing from the files
 UNRECORDABLE = 4  # what is left is only what the config format cannot express
+UNPRUNED = 5      # a file lists entries, and the box holds none of them
 
 
-def report(root, plan, paths, dry_run):
+def report(root, plan, paths, dry_run, refused=()):
     """Print what was captured (or would be) and what needs a human decision.
 
-    Returns the exit status (OK / DRIFT / UNRECORDABLE above). The two non-zero
+    `refused` comes from the caller because it has to be read before anything
+    is written: once a file has gained the entries this run captured, the box
+    holds one of the lines in it and the evidence reads the other way.
+
+    Returns the exit status (OK / DRIFT / UNRECORDABLE / UNPRUNED above). The non-zero
     ones are kept apart because they call for different things: drift has a fix
     — run a mirror — while a setting the config cannot express has none, and a
     check that stays red for something unfixable is one people learn to ignore.
@@ -660,6 +700,13 @@ def report(root, plan, paths, dry_run):
 
     for label, reason in plan.unroutable:
         print(f"WARN: {label} was not captured: {reason}.", file=sys.stderr)
+
+    for path, count in refused:
+        print(f"WARN: {path} lists {count} entr"
+              f"{'y' if count == 1 else 'ies'} this Pi-hole does not hold, and "
+              "holds nothing else this file lists — so they were never deleted "
+              "here, and were left alone. Deploy first, or pass --force-prune "
+              "if you did delete them all.", file=sys.stderr)
 
     empty = groups_without_config(root, plan)
     for name in empty:
@@ -689,7 +736,9 @@ def report(root, plan, paths, dry_run):
               file=sys.stderr)
     if dry_run and paths:
         return DRIFT
-    return UNRECORDABLE if unrecordable else OK
+    if unrecordable:
+        return UNRECORDABLE
+    return UNPRUNED if refused else OK
 
 
 def main(argv=None):
@@ -709,6 +758,10 @@ def main(argv=None):
     mode.add_argument("--adopt", metavar="ENTRIES",
                       help="hand the entries in this JSON file ('-' for stdin) to "
                            "the reconciler (run on the Pi-hole host)")
+    parser.add_argument("--force-prune", action="store_true",
+                        help="drop entries the box does not hold even from files "
+                             "it holds nothing of (use when everything in a file "
+                             "really was deleted in the admin UI)")
     parser.add_argument("--dir", default=".", metavar="DIR",
                         help="config root to write into (default: current directory)")
     args = parser.parse_args(argv)
@@ -738,10 +791,13 @@ def main(argv=None):
         json.dump(entries_to_json(planned), sys.stdout)
         print()
         return OK
-    pending = pending_changes(args.dir, plan)
+    pending = pending_changes(args.dir, plan, force_prune=args.force_prune)
+    refused = () if args.force_prune else refused_prunes(args.dir, plan)
     if args.check:
-        return report(args.dir, plan, [path for path, _ in pending], dry_run=True)
-    return report(args.dir, plan, write_changes(args.dir, pending), dry_run=False)
+        return report(args.dir, plan, [path for path, _ in pending],
+                      dry_run=True, refused=refused)
+    return report(args.dir, plan, write_changes(args.dir, pending),
+                  dry_run=False, refused=refused)
 
 
 if __name__ == "__main__":

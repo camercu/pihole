@@ -609,6 +609,59 @@ def test_a_file_the_mirror_cannot_route_to_is_never_pruned(tmp_path):
     assert (cfg / "allowlist-urls.txt").read_text() == "https://a.example/allow.txt\n"
 
 
+def test_nothing_is_pruned_from_a_file_the_box_was_never_deployed_from(tmp_path):
+    # A freshly installed Pi-hole holds its own default blocklist and nothing
+    # else. Every entry these files list is missing from it — not because
+    # anyone deleted them, but because they were never deployed here. Pruning
+    # on that reading empties the config the first time someone runs a mirror
+    # against a box they have not deployed to yet.
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "adlists.txt").write_text(
+        "https://one.example/l.txt\nhttps://two.example/l.txt\n"
+        "https://three.example/l.txt\n", encoding="utf-8")
+    fresh = _only_default_group(
+        lists=[_adlist("https://shipped.example/l.txt", [0])])
+
+    _merge(tmp_path, fresh, cfg)
+
+    kept = h.clean_lines((cfg / "adlists.txt").read_text())
+    assert "https://one.example/l.txt" in kept
+    assert "https://two.example/l.txt" in kept
+    assert "https://three.example/l.txt" in kept
+
+
+def test_refusing_to_prune_is_reported_and_fails_the_run(tmp_path, capsys):
+    # Silence would leave the operator believing the files now match the box.
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "adlists.txt").write_text(
+        "https://one.example/l.txt\nhttps://two.example/l.txt\n",
+        encoding="utf-8")
+    fresh = _only_default_group(
+        lists=[_adlist("https://shipped.example/l.txt", [0])])
+
+    assert _merge(tmp_path, fresh, cfg) == h.UNPRUNED
+    said = capsys.readouterr().err
+    assert "adlists.txt" in said
+    assert "2" in said
+
+
+def test_force_prune_captures_a_wholesale_deletion(tmp_path):
+    # The one case the evidence rule declines wrongly: every entry really was
+    # deleted in the UI, so nothing managed is left to prove the box took the
+    # file. The flag is how an operator says so.
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "adlists.txt").write_text("https://gone.example/l.txt\n",
+                                     encoding="utf-8")
+
+    h.main(["--merge", _state_file(tmp_path, _only_default_group()),
+            "--dir", str(cfg), "--force-prune"])
+
+    assert h.clean_lines((cfg / "adlists.txt").read_text()) == []
+
+
 def test_nothing_is_pruned_when_live_state_is_empty(tmp_path):
     # An unprovisioned or wiped box answers with nothing at all. Reading that as
     # "the operator deleted everything" would empty the config in one run.

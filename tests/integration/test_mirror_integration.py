@@ -66,20 +66,45 @@ def test_an_entry_deleted_in_the_admin_ui_leaves_the_config_file(pihole, ui,
                                                                  tmp_path):
     # The other half of capture: without it the admin UI can only ever add, and
     # a blocklist deleted there is put straight back by the next reconcile.
-    address = ui.adlist("https://deleted.example/l.txt")
+    kept = ui.adlist("https://kept.example/l.txt")
+    gone = ui.adlist("https://deleted.example/l.txt")
     _, state = _export(pihole, tmp_path)
     cfg = tmp_path / "config"
     cfg.mkdir()
     assert "CHANGED" in pihole.run_mirror("--merge", str(state),
-                                           "--dir", str(cfg)).stdout
-    assert address in (cfg / "adlists.txt").read_text()
+                                          "--dir", str(cfg)).stdout
 
-    pihole.api.post("/lists:batchDelete", [{"item": address, "type": "block"}])
+    pihole.api.post("/lists:batchDelete", [{"item": gone, "type": "block"}])
     _, after = _export(pihole, tmp_path)
 
     assert "CHANGED" in pihole.run_mirror("--merge", str(after),
-                                           "--dir", str(cfg)).stdout
-    assert address not in (cfg / "adlists.txt").read_text()
+                                          "--dir", str(cfg)).stdout
+    text = (cfg / "adlists.txt").read_text()
+    assert gone not in text
+    assert kept in text
+
+
+def test_a_file_the_box_holds_nothing_of_is_left_alone(pihole, tmp_path):
+    # A box that was never deployed from these files holds none of what they
+    # list. That reads exactly like "every one of them was deleted", and acting
+    # on it empties the config the first time anyone mirrors against the wrong
+    # box. Declined, and the flag is how an operator says it really was a
+    # deletion.
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "adlists.txt").write_text("https://never-deployed.example/l.txt\n",
+                                     encoding="utf-8")
+    _, state = _export(pihole, tmp_path)
+
+    declined = pihole.run_mirror("--merge", str(state), "--dir", str(cfg))
+    assert declined.returncode == 5, declined.stdout + declined.stderr
+    assert "never-deployed.example" in (cfg / "adlists.txt").read_text()
+    assert "adlists.txt" in declined.stderr
+
+    forced = pihole.run_mirror("--merge", str(state), "--dir", str(cfg),
+                               "--force-prune")
+    assert forced.returncode == 0, forced.stdout + forced.stderr
+    assert "never-deployed.example" not in (cfg / "adlists.txt").read_text()
 
 
 def test_a_managed_entry_already_recorded_is_not_written_twice(pihole, tmp_path):
