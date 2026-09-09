@@ -19,6 +19,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+import pihole_deploy as deploy
 import pytest
 
 # Pinned for reproducibility; bump deliberately. Version tags are immutable.
@@ -31,6 +32,10 @@ PIHOLE_CT = "pihole-it"
 FILES_CT = "pihole-it-files"
 PIHOLE_PORT = 8081  # host -> pihole :80
 FILES_PORT = 8000  # host -> fileserver :8000 (also reachable in-net as FILES_CT)
+
+# A domain the container resolves from its own config, never upstream. Tests
+# that need "this still resolves" use it so no probe leaves the container.
+RESOLVES_DOMAIN = "resolves.test"
 
 MANAGED = "managed by ansible"
 # Any comment that is not MANAGED marks a row as hand-added.
@@ -163,8 +168,10 @@ class Api:
         """Block until FTL accepts a write again.
 
         Gravity swaps the config database asynchronously; for a short window
-        afterwards writes fail with "readonly database". A create/delete of a
-        throwaway group probes the very table the tests mutate.
+        afterwards a write is refused as locked or read-only. A create/delete of
+        a throwaway group probes writability, which is what the caller is
+        waiting for — the deployed script carries the same rule for the tables
+        it writes, so `is_transient` is shared rather than restated here.
         """
         deadline = time.time() + timeout
         probe = "_it_writable_probe"
@@ -175,7 +182,7 @@ class Api:
             if st in (200, 201):
                 self._call("DELETE", "/groups/" + probe)
                 return
-            if "readonly" not in json.dumps(j).lower() or time.time() > deadline:
+            if not deploy.is_transient(st, j) or time.time() > deadline:
                 assert st in (200, 201), f"DB never became writable: {st} {j}"
             time.sleep(0.5)
 
@@ -253,6 +260,13 @@ def _containers():
     _rt("run", "-d", "--name", PIHOLE_CT, "--network", NET,
         "-e", "TZ=UTC", "-e", f"FTLCONF_webserver_api_password={PASSWORD}",
         "-e", "FTLCONF_dns_upstreams=1.1.1.1",
+        # A name the container answers from its own /etc/hosts, which FTL serves
+        # directly. Checks that assert "a domain still resolves" use it, so no
+        # probe leaves the container and the suite keeps the promise made above.
+        # Set at creation rather than through the config API: changing DNS
+        # config restarts DNS, and a restart landing mid-session races the
+        # gravity reload a later test depends on.
+        "--add-host", f"{RESOLVES_DOMAIN}:203.0.113.1",
         "-p", f"{PIHOLE_PORT}:80", PIHOLE_IMAGE)
     base = f"http://localhost:{PIHOLE_PORT}/api"
     try:
@@ -367,6 +381,26 @@ class SimpleEnv:
     def run_backup(self, restic_env):
         """Run the real backup script; restic_env carries the RESTIC_* settings."""
         return self._run(BACKUP_SCRIPT, **restic_env)
+
+    def wait_until_blocked(self, domain, timeout=30):
+        """Block until Pi-hole actually sinkholes `domain` over DNS.
+
+        A gravity rebuild finishes after the deploy script has already exited,
+        so "the run succeeded" is not yet "DNS serves the new list". Asked of
+        the resolver rather than the API because the resolver is what a check
+        downstream of this queries. Resolved from the sidecar: host->container
+        UDP forwarding is unreliable, the same reason run_smoke_in_net does.
+        """
+        deadline = time.time() + timeout
+        while True:
+            got = subprocess.run(
+                [RUNTIME, "exec", FILES_CT, "nslookup", domain, PIHOLE_CT],
+                text=True, capture_output=True)
+            if "0.0.0.0" in got.stdout:
+                return
+            assert time.time() < deadline, (
+                f"{domain} was never sinkholed: {got.stdout} {got.stderr}")
+            time.sleep(0.5)
 
     def run_smoke_in_net(self, extra_env=None):
         """Run the smoke script *inside* the container network.

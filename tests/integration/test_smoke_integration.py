@@ -5,6 +5,7 @@ real DNS + the FTL API. Proves the health check has teeth: a blocked domain is
 seen as blocked, and a domain that resolves is NOT mistaken for blocked.
 """
 import pytest
+from conftest import RESOLVES_DOMAIN
 
 pytestmark = pytest.mark.integration
 
@@ -18,12 +19,16 @@ def _load_gravity(pihole, tmp_path):
                                      encoding="utf-8")
     r = pihole.run_deploy(cfg)
     assert r.returncode == 0, r.stderr
+    # Gravity finishes loading after the script exits; without this the checks
+    # below race the reload, and whether they pass turns on how long the first
+    # probe happens to take.
+    pihole.wait_until_blocked("ads.example")
 
 
 def test_smoke_passes_against_a_healthy_pihole(pihole, tmp_path):
     _load_gravity(pihole, tmp_path)
     r = pihole.run_smoke_in_net({
-        "SMOKE_RESOLVE_DOMAIN": "example.com",
+        "SMOKE_RESOLVE_DOMAIN": RESOLVES_DOMAIN,
         "SMOKE_BLOCKED_DOMAIN": "ads.example",
     })
     assert r.returncode == 0, r.stdout + r.stderr
@@ -33,10 +38,10 @@ def test_smoke_passes_against_a_healthy_pihole(pihole, tmp_path):
 
 def test_smoke_fails_when_the_blocked_domain_is_not_blocked(pihole, tmp_path):
     _load_gravity(pihole, tmp_path)
-    # example.com resolves, so demanding it be "blocked" must make the check fail.
+    # This domain resolves, so demanding it be "blocked" must make the check fail.
     r = pihole.run_smoke_in_net({
-        "SMOKE_RESOLVE_DOMAIN": "example.com",
-        "SMOKE_BLOCKED_DOMAIN": "example.com",
+        "SMOKE_RESOLVE_DOMAIN": RESOLVES_DOMAIN,
+        "SMOKE_BLOCKED_DOMAIN": RESOLVES_DOMAIN,
     })
     assert r.returncode == 1
     assert "SMOKE FAILED" in r.stderr
