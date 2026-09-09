@@ -36,7 +36,8 @@ client → Pi-hole (:53, blocklists) → Unbound (:5335, DoT cache) → upstream
 
 ```
 shell.nix / .envrc          # nix dev env: ansible, ansible-lint, ruff, pytest, restic
-justfile                    # task runner: `just lint`, `just test`, `just test-full`
+justfile                    # task runner: `just deploy`, `just mirror`, `just adopt`,
+                            #   `just lint`, `just test`, `just test-full`
 ansible/
   ansible.cfg
   inventory.yml             # the Pi: host, ssh user
@@ -107,7 +108,8 @@ key) automatically. Otherwise prefix commands with `nix-shell --run '…'`.
 
 ```bash
 # Full rebuild (same as ./setup.sh once configured):
-nix-shell --run 'cd ansible && ansible-playbook site.yml'
+nix-shell --run 'just deploy'
+nix-shell --run 'cd ansible && ansible-playbook site.yml'   # the same thing
 
 # Preview without changing anything:
 nix-shell --run 'cd ansible && ansible-playbook site.yml --check --diff'
@@ -164,6 +166,10 @@ the group name), holding up to three files:
 - `adlists.txt` — remote blocklists applied to this group
 - `clients.txt` — the group's devices (IP / MAC / hostname / subnet), one per line
 
+Deleting a group's directory removes the group from the Pi on the next
+`just deploy`: the deployed copy is brought back into line with this tree rather
+than only added to, so a group stops existing when nothing here describes it.
+
 A device listed in a group's `clients.txt` joins that group **and** the default
 group, so it keeps normal ad/threat blocking and additionally gets the group's
 block lists. A shipped **`kids`** group blocks social media + AI chatbots; it
@@ -218,31 +224,51 @@ mirror owns ends up listing what the box actually holds: entries you added appea
 entries you deleted go, and your comments, blank lines and ordering are left
 exactly where they were. Only the files the mirror can route into are touched —
 `allowlist-urls.txt` names remote lists to fetch rather than entries Pi-hole
-holds, so it is never pruned. If the Pi answers with nothing at all (not yet
-provisioned, or its database wiped), nothing is pruned either: that is a box
-with no state to read, not an instruction to empty the config. `git diff` is
-still the gate — nothing reaches the Pi until you commit and run `site.yml`.
+holds, so it is never pruned.
+
+A file only loses a line when the box still holds something else that file
+lists. An entry a file names and the box does not hold is ambiguous on its own —
+someone deleted it, or this box was never given it — and the two are told apart
+per file, not per entry: a Pi that ever took this file still holds part of it,
+while a Pi that never did holds none of it. So mirroring against a box the
+committed files were never deployed to leaves them alone rather than emptying
+them, and names each file it left alone with the count involved. The one
+case that misreads is a file whose every entry really was deleted in the admin
+UI; the mirror declines that too (exit 5), and `--force-prune` is how you say it
+was deliberate.
+
+> **Known gap.** Domains fetched from `allowlist-urls.txt` are pushed to Pi-hole
+> as ordinary allow entries, so the mirror cannot tell them from ones you added
+> by hand and writes them into `allow.list`. Until that is fixed, check the
+> `allow.list` hunk of a mirror diff before committing it, and drop any block
+> that is just a remote list's contents — committing them forks that list into
+> this repo, and it stops tracking upstream. `git diff` is still the gate — nothing reaches the Pi until you
+commit and run `just deploy`.
 
 An entry is captured only when reconciling from the file it lands in would
 reproduce that entry's current group set exactly. The UI can say things the
 config cannot — an allowlist scoped to one group, a device outside the default
 group, a disabled row — and capturing those anyway would change what Pi-hole
-blocks, so the mirror names each one with the reason and exits non-zero instead.
+blocks, so the mirror names each one with the reason and exits 4 instead. That
+does not fail the run: the files it could capture were still written, and a
+check that stays red for something with no fix is one people learn to ignore.
 Record those another way, or accept that a rebuild won't restore them.
 
 A captured entry still carries its hand-added comment on the box, so the next
 `site.yml` run would report it as a collision. Deploy the committed files first
-(`site.yml`, or `--tags pihole`) — `just adopt` refuses to run while the Pi is
-reconciling from something other than what you just reviewed, since an entry
-only the repo records is one the next reconcile would delete. `just adopt` then
-finishes the job:
-it hands every entry the config files now record over to the reconciler by
+(`just deploy`, or `--tags pihole` for the pihole role alone) — `just adopt`
+refuses to run while the Pi is reconciling from something other than what you
+just reviewed, since an entry only the repo records is one the next reconcile
+would delete. `just adopt` then finishes the job: it hands every entry the
+config files now record over to the reconciler by
 rewriting that comment. Nothing is deleted or re-resolved — the row stays put
 and only changes hands — and an entry no file records is left alone, so adopting
 can't turn into a way to lose settings.
 
-The loop, then, is: change what you like in the admin UI, `just mirror`,
-review the diff and commit, `just adopt`.
+The loop, then, is: change what you like in the admin UI, `just mirror`, review
+the diff and commit, `just deploy`, `just adopt`. The deploy in the middle is
+not optional — `just adopt` refuses to run without it, since an entry only the
+repo records is one the next reconcile would delete.
 
 `verify.yml` runs the same comparison and fails when the box carries a setting
 no config file records — so drift surfaces on a routine health check rather than
@@ -293,10 +319,12 @@ until the NAS is set up. To enable:
 1. **Give the Pi SSH access to the NAS** — the Pi's root user must be able to
    `ssh <nas_user>@<backup_nas_host>` non-interactively (install a key).
 2. **Add the restic repo password to the vault:**
+
    ```bash
    nix-shell --run 'cd ansible && ansible-vault edit group_vars/all/vault.yml'
    # add:  vault_restic_password: "a-strong-passphrase"
    ```
+
 3. **Fill in the NAS details** in `group_vars/all/local.yml`: `backup_nas_host`,
    `backup_nas_user`, `backup_nas_path`. Then set `backup_enabled: true` in
    `roles/backup/defaults/main.yml` (that toggle isn't per-site).
@@ -373,8 +401,18 @@ Change the allowed subnet via `hardening_lan_subnet` in `roles/hardening/default
   populated → run `--tags pihole` (or `pihole -g` on the box); a domain not
   resolving → check unbound (`systemctl status unbound`, `unbound-checkconf`);
   admin HTTPS down → check `pihole-FTL`.
-- **Sync exits non-zero with a collision warning** — a list entry was also added
-  by hand in the admin UI. Remove the hand-added copy so the role can manage it.
+- **`just deploy` exits non-zero with a collision warning** — a list entry was
+  also added by hand in the admin UI. Remove the hand-added copy so the role can
+  manage it.
+- **`just mirror` says it left entries alone (exit 5)** — the box holds nothing
+  else that file lists, so the entries missing from it were never deleted there;
+  most likely you are mirroring a Pi the committed files were never deployed to.
+  Run `just deploy` first. If you really did delete every entry in that file in
+  the admin UI, say so: `pihole_mirror.py --merge ... --force-prune`.
+- **`just deploy` warns that a config file is not there** — a top-level file
+  (`adlists.txt`, `allow.list`, `allowlist-urls.txt`) is missing, so this run
+  cannot know what it would have listed and removes nothing for that kind.
+  Restore the file, or add it empty if you meant it to list nothing.
 - **`verify.yml` reports drift** — Pi-hole carries settings no config file
   records. `just mirror` writes them into the files; review with `git diff`
   and commit.
