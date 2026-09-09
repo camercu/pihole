@@ -48,13 +48,15 @@
     # 0 = in sync, 4 = only settings the config format cannot express. Those
     # pass: an unexpressible setting has no fix to apply, and a check that stays
     # red for something unfixable is one people learn to ignore. Everything else
-    # fails — 3 is capturable drift, while 1 and 2 are the check itself not
-    # finishing (traceback, bad arguments), which must never read as a clean run.
+    # fails — 3 is capturable drift and 5 is a box that was never deployed from
+    # these files, both of which have a fix, while 1 and 2 are the check itself
+    # not finishing (traceback, bad arguments), which must never read as clean.
     - name: Fail when settings exist that no config file records
       ansible.builtin.fail:
         msg: >-
-          Pi-hole carries settings this repo does not record, or the drift check
-          could not run (exit {{ pihole_drift.rc }}). If it is drift, run
-          `just mirror`, review the diff, and commit.
+          Pi-hole carries settings this repo does not record, or these files
+          record settings it was never given, or the drift check could not run
+          (exit {{ pihole_drift.rc }}). If it is drift, run `just mirror`,
+          review the diff, and commit. If it is exit 5, deploy first.
       when: pihole_drift.rc not in [0, 4]
       tags: [verify, drift]

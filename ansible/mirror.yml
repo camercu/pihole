@@ -41,9 +41,16 @@
       ansible.builtin.debug:
         msg: "{{ (pihole_mirror.stdout_lines + pihole_mirror.stderr_lines) | select | list }}"
 
-    - name: Fail when anything is left unrecorded
+    # 0 = everything captured, 4 = the rest is only what the config format
+    # cannot express. Both pass: the capture worked, files were written, and an
+    # unexpressible setting has no fix — failing on it would leave `just mirror`
+    # red for good over a decision already made, on a run that changed the
+    # working tree. verify.yml draws the same line for the same reason. 5 fails
+    # because it does have a fix, and 1 and 2 are the run not finishing.
+    - name: Fail when the capture could not be trusted
       ansible.builtin.fail:
         msg: >-
-          Some live settings could not be captured (see above). Record each one
-          another way, or accept that a rebuild will not restore it.
-      when: pihole_mirror.rc != 0
+          The mirror declined to capture some deletions, or it could not run
+          (exit {{ pihole_mirror.rc }}). See above: deploy the committed files
+          first, or pass --force-prune if everything really was deleted.
+      when: pihole_mirror.rc not in [0, 4]
