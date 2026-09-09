@@ -128,6 +128,67 @@ def test_collision_text_body_tolerated():
     assert not deploy.is_collision(500, "internal error")
 
 
+def test_ftl_database_locked_is_transient():
+    # Gravity swaps the database as it rebuilds. A write that lands mid-swap is
+    # refused with this and succeeds moments later, so it is not the run's fault.
+    body = {"error": {"key": "database_error",
+                      "message": "Could not add to gravity database",
+                      "hint": "database is locked"}}
+    assert deploy.is_transient(400, body)
+
+
+def test_ftl_readonly_database_is_transient():
+    # The other half of the swap window: the new file is in place but still
+    # read-only. Same cause, different SQLite wording.
+    assert deploy.is_transient(400, {"error": {"hint": "attempt to write a "
+                                               "readonly database"}})
+
+
+def test_a_real_database_error_is_not_transient():
+    # A bad regex answers the same way however long you wait, so retrying it
+    # would turn a clear failure into a slow one.
+    assert not deploy.is_transient(400, {"error": {"message": "bad regex"}})
+
+
+def test_a_collision_is_not_transient():
+    # Collisions have their own handling; retrying one would never clear.
+    body = {"error": {"message": "The item is already present"}}
+    assert not deploy.is_transient(400, body)
+    assert deploy.is_collision(400, body)
+
+
+def test_success_is_not_transient():
+    assert not deploy.is_transient(201, {})
+
+
+_LOCKED = (400, {"error": {"key": "database_error", "hint": "database is locked"}})
+
+
+def test_a_transient_database_answer_is_retried_until_it_clears():
+    answers = [_LOCKED, _LOCKED, (201, {})]
+    slept = []
+    call = lambda: answers.pop(0)  # noqa: E731
+    assert deploy.retry_transient(call, sleep=slept.append) == (201, {})
+    assert len(slept) == 2
+
+
+def test_a_database_that_never_unlocks_gives_back_ftls_own_answer():
+    # Bounded, so a genuinely stuck database stops the run instead of hanging
+    # it — and stops it with the message FTL gave, not one this script invented.
+    assert deploy.retry_transient(lambda: _LOCKED, sleep=lambda _: None) == _LOCKED
+
+
+def test_a_settled_answer_is_not_retried_at_all():
+    calls = []
+
+    def call():
+        calls.append(1)
+        return 201, {}
+
+    assert deploy.retry_transient(call, sleep=lambda _: None) == (201, {})
+    assert len(calls) == 1
+
+
 def test_assemble_desired_scopes_and_unions():
     d = deploy.assemble_desired(
         ["global-ad.txt"],

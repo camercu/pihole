@@ -26,7 +26,8 @@ one (warned and skipped, so the rest of the run still converges).
 
 Structure: the pure functions below (clean_lines, is_regex, split_allow,
 host_domain, plan_membership, build_membership, network_wide, assemble_desired,
-normalize_groups, discover_groups, is_collision) hold the decision logic and are
+normalize_groups, discover_groups, is_collision, is_transient) hold the decision
+logic and are
 unit-tested; everything that touches the network or filesystem is the thin shell
 beneath them.
 """
@@ -34,6 +35,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -45,6 +47,14 @@ _REGEX_CHARS = re.compile(r"[\[\](){}|^$\\*+?]")
 # FTL rejects a duplicate add with this message; we treat it as a soft collision
 # (something already added the entry by hand) rather than a fatal error.
 _ALREADY_PRESENT = "already present"
+# SQLite's two "ask again" conditions, verbatim. A gravity rebuild swaps the
+# database, so a write landing mid-swap meets one of these and succeeds on the
+# retry; every other database error stays broken however long you wait.
+_TRANSIENT_DB = ("database is locked", "readonly database")
+# Backoff between retries of a transient answer, in seconds. Spans a gravity
+# swap (well under a second in practice) without letting a genuinely stuck
+# database hold the playbook for more than about a quarter of a minute.
+_DB_RETRY_WAITS = (0.25, 0.5, 1, 2, 4, 8)
 
 
 # ── pure core (unit-tested) ─────────────────────────────────────────────────
@@ -72,6 +82,21 @@ def is_collision(status, body):
     if status not in (400, 409):
         return False
     return _ALREADY_PRESENT in json.dumps(body).lower()
+
+
+def is_transient(status, body):
+    """True if FTL refused the call because its database was momentarily busy.
+
+    Gravity rebuilds swap the database underneath FTL, and for a short window
+    writes are refused with one of SQLite's two "ask again" conditions. That is
+    not the caller's mistake and not a state to reconcile against — it is the
+    same call, not yet made. Distinguished from a real database error, which
+    keeps answering the same way however long you wait.
+    """
+    if 200 <= status < 300:
+        return False
+    said = json.dumps(body).lower()
+    return any(cond in said for cond in _TRANSIENT_DB)
 
 
 def split_allow(entries):
@@ -276,8 +301,30 @@ fetch_ok = True
 collisions = []
 
 
+def retry_transient(call, sleep=time.sleep, waits=_DB_RETRY_WAITS):
+    """Repeat `call` while it answers with a transient database condition.
+
+    Returns the first settled answer — or the last transient one, once the waits
+    run out, so the caller still sees FTL's own words and fails on them. Bounded
+    on purpose: a database that never unlocks is a real fault, and a run that
+    hangs on it is worse than one that stops.
+    """
+    for wait in waits:
+        status, body = call()
+        if not is_transient(status, body):
+            return status, body
+        sleep(wait)
+    return call()
+
+
 def api(method, path, sid=None, body=None):
-    """Call the FTL API. Returns (status_code, decoded_json_or_text)."""
+    """Call the FTL API. Returns (status_code, decoded_json_or_text).
+
+    Every call the script makes comes through here, so this is where waiting out
+    a database swap belongs: a locked or read-only answer means the call has not
+    happened yet, and the alternative — dying on it — aborts a whole deploy for
+    a window that closes on its own.
+    """
     url = API + path
     if sid:
         url += ("&" if "?" in url else "?") + "sid=" + urllib.parse.quote(sid)
@@ -288,6 +335,11 @@ def api(method, path, sid=None, body=None):
         method=method,
         headers={"Content-Type": "application/json", "Accept": "application/json"},
     )
+    return retry_transient(lambda: _request(req))
+
+
+def _request(req):
+    """One HTTP round trip to FTL, as (status, decoded body)."""
     try:
         # Bound the call so a stalled pihole-FTL can't hang the playbook forever.
         with urllib.request.urlopen(req, timeout=30) as r:
