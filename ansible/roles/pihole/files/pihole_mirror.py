@@ -710,10 +710,12 @@ def report(root, plan, paths, dry_run, refused=(), removed=None):
     is written: once a file has gained the entries this run captured, the box
     holds one of the lines in it and the evidence reads the other way.
 
-    Returns the exit status (OK / DRIFT / UNRECORDABLE / UNPRUNED above). The non-zero
-    ones are kept apart because they call for different things: drift has a fix
-    — run a mirror — while a setting the config cannot express has none, and a
-    check that stays red for something unfixable is one people learn to ignore.
+    Returns the exit status (OK / DRIFT / UNRECORDABLE / UNPRUNED above). The
+    non-zero ones are kept apart because they call for different things: drift
+    has a fix — run a mirror — while a setting the config cannot express has
+    none, and a check that stays red for something unfixable is one people learn
+    to ignore. When more than one applies, the one with a fix wins, or the run
+    that has something to do reads as the run that has nothing to do.
     Under dry_run an uncaptured change is drift; capturing it is a success.
     """
     removed = removed or {}
@@ -739,9 +741,9 @@ def report(root, plan, paths, dry_run, refused=(), removed=None):
               file=sys.stderr)
 
     if dry_run:
-        print("DRIFT" if paths else "in sync")
+        print("DRIFT" if paths else ("DECLINED" if refused else "in sync"))
     else:
-        print("CHANGED" if paths else "no changes")
+        print("CHANGED" if paths else ("DECLINED" if refused else "no changes"))
     unrecordable = len(plan.unroutable) + len(empty)
     # Counted apart because they are different things: one is a number of files
     # a mirror run would write, the other a number of settings it cannot.
@@ -760,9 +762,13 @@ def report(root, plan, paths, dry_run, refused=(), removed=None):
               file=sys.stderr)
     if dry_run and paths:
         return DRIFT
-    if unrecordable:
-        return UNRECORDABLE
-    return UNPRUNED if refused else OK
+    # A refusal outranks an unexpressible setting. Both playbooks pass 4,
+    # deliberately, because an unexpressible setting has no fix to apply — so
+    # answering 4 for a run that also declined to prune hides the refusal behind
+    # something normal, and one disabled entry is enough to do it.
+    if refused:
+        return UNPRUNED
+    return UNRECORDABLE if unrecordable else OK
 
 
 def main(argv=None):

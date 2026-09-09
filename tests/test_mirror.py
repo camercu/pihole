@@ -648,6 +648,41 @@ def test_the_report_says_how_many_entries_each_file_lost(tmp_path, capsys):
     assert "adlists.txt (2 removed)" in capsys.readouterr().out
 
 
+def test_a_refusal_outranks_a_setting_that_cannot_be_expressed(tmp_path, capsys):
+    # Both playbooks pass exit 4, because an unexpressible setting has no fix.
+    # Reporting 4 for a run that also declined to prune hid the refusal behind
+    # something normal: one disabled entry made every refusal read as green.
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "adlists.txt").write_text(
+        "https://one.example/l.txt\nhttps://two.example/l.txt\n",
+        encoding="utf-8")
+    state = _only_default_group(
+        lists=[_adlist("https://shipped.example/l.txt", [0])],
+        domains=[_domain("off.example", "deny", "exact", [0], enabled=False)])
+
+    assert _merge(tmp_path, state, cfg) == h.UNPRUNED
+    said = capsys.readouterr()
+    assert "it is disabled" in said.err
+    assert "adlists.txt" in said.err
+
+
+def test_a_run_that_declined_to_prune_does_not_call_itself_in_sync(tmp_path,
+                                                                   capsys):
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "adlists.txt").write_text("https://one.example/l.txt\n",
+                                     encoding="utf-8")
+
+    # Nothing to write back, so the old wording had nothing to report and said
+    # the files matched the box — on the one run that had just declined to make
+    # them match it.
+    h.main(["--check", _state_file(tmp_path, _only_default_group()),
+            "--dir", str(cfg)])
+
+    assert "in sync" not in capsys.readouterr().out
+
+
 def test_refusing_to_prune_is_reported_and_fails_the_run(tmp_path, capsys):
     # Silence would leave the operator believing the files now match the box.
     cfg = tmp_path / "config"
