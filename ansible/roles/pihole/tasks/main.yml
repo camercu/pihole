@@ -105,6 +105,43 @@
     mode: "0644"
     directory_mode: "0755"
 
+# copy never removes a destination whose source has gone, so deleting a group
+# from the repo left the box reconciling it forever — the one list operation
+# these files could not express. adopt.yml compares the two trees and refuses
+# while they differ, so the leftover also wedged `just adopt` behind advice
+# (run site.yml) that could not clear it.
+- name: List the group config this repo describes
+  ansible.builtin.find:
+    paths: "{{ role_path }}/files/groups"
+    recurse: true
+    file_type: any
+  register: pihole_group_source
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
+- name: List the group config deployed on the box
+  ansible.builtin.find:
+    paths: /etc/pihole/managed/groups
+    recurse: true
+    file_type: any
+  register: pihole_group_deployed
+  changed_when: false
+
+# Files before directories, longest path first, so a group's contents go before
+# the directory holding them and `file` never meets a non-empty one.
+- name: Remove group config the repo no longer describes
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ pihole_group_deployed.files | map(attribute='path')
+            | reject('in', pihole_group_kept) | sort(reverse=true) | list }}"
+  vars:
+    pihole_group_kept: >-
+      {{ pihole_group_source.files | map(attribute='path')
+         | map('relpath', role_path ~ '/files/groups')
+         | map('regex_replace', '^', '/etc/pihole/managed/groups/') | list }}
+
 # Both scripts keep their module filenames because the mirror imports the
 # reconciler for the ownership contract they share ("managed by ansible", the
 # default-group rule), and Python only imports a module whose filename is an
