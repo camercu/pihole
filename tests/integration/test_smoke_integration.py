@@ -45,3 +45,8 @@ def test_smoke_fails_when_the_blocked_domain_is_not_blocked(pihole, tmp_path):
     })
     assert r.returncode == 1
     assert "SMOKE FAILED" in r.stderr
+    # Which check failed, not just that something did: a sys.exit(1) anywhere in
+    # the script satisfies the status alone, and then this test is only its
+    # sibling repeated.
+    assert f"[FAIL] {RESOLVES_DOMAIN} blocked" in r.stdout
+    assert "[PASS] gravity populated" in r.stdout
