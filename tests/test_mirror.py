@@ -683,6 +683,21 @@ def test_a_run_that_declined_to_prune_does_not_call_itself_in_sync(tmp_path,
     assert "in sync" not in capsys.readouterr().out
 
 
+def test_a_declined_run_gets_a_summary_line_like_every_other_verdict(tmp_path,
+                                                                     capsys):
+    # The per-file warnings scroll past in the playbook's debug dump; the
+    # summary is the line that survives it.
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "adlists.txt").write_text("https://one.example/l.txt\n",
+                                     encoding="utf-8")
+
+    h.main(["--check", _state_file(tmp_path, _only_default_group()),
+            "--dir", str(cfg)])
+
+    assert "ERROR: 1 config file(s) left as they are" in capsys.readouterr().err
+
+
 def test_refusing_to_prune_is_reported_and_fails_the_run(tmp_path, capsys):
     # Silence would leave the operator believing the files now match the box.
     cfg = tmp_path / "config"

@@ -752,12 +752,16 @@ def report(root, plan, paths, dry_run, refused=(), removed=None):
         parts.append(f"{len(paths)} config file(s) a mirror run would write")
     if unrecordable:
         parts.append(f"{unrecordable} setting(s) no config file can record")
+    if refused:
+        parts.append(f"{len(refused)} config file(s) left as they are")
     if parts:
         # ERROR only when the status says so. Settings the config cannot express
         # exit UNRECORDABLE, which verify passes on deliberately — calling that
         # an error is how a green check ends up printing one, which is the habit
-        # of ignoring the check, taught.
-        level = "ERROR" if (dry_run and paths) else "WARN"
+        # of ignoring the check, taught. A declined prune does fail, so it says
+        # ERROR and gets a line of its own: the per-file warnings scroll past in
+        # the playbook's debug dump and the summary is what survives it.
+        level = "ERROR" if (dry_run and paths) or refused else "WARN"
         print(f"{level}: " + ", and ".join(parts) + " (see warnings above)",
               file=sys.stderr)
     if dry_run and paths:
