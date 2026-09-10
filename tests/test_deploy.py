@@ -178,6 +178,18 @@ def test_a_database_that_never_unlocks_gives_back_ftls_own_answer():
     assert deploy.retry_transient(lambda: _LOCKED, sleep=lambda _: None) == _LOCKED
 
 
+def test_a_locked_write_is_retried_by_the_call_that_makes_it(monkeypatch):
+    # The predicate and the policy are both tested above, and neither of them is
+    # the fix: api() routing through them is. Without this the wiring can be
+    # dropped and the whole suite stays green.
+    answers = [_LOCKED, _LOCKED, (201, {})]
+    monkeypatch.setattr(deploy, "_request", lambda req: answers.pop(0))
+    monkeypatch.setattr(deploy.time, "sleep", lambda _: None)
+
+    assert deploy.api("POST", "/groups", body={}) == (201, {})
+    assert answers == []
+
+
 def test_a_missing_config_root_is_not_an_empty_one(tmp_path):
     # Pointing PIHOLE_DIR at a path that is not there deleted every managed
     # entry and reported success, because absent read as empty everywhere.
