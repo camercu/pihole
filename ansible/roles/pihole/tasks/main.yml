@@ -94,6 +94,21 @@
     - allow.list
     - allowlist-urls.txt
 
+# git tracks no directory with nothing in it, so the last group ever being
+# deleted from the repo can leave this path absent rather than merely empty —
+# and copy fails the whole play on an absent source ("could not find or
+# access ... on the Ansible Controller"), unlike on an empty one. Ensuring it
+# exists first makes "the repo describes zero groups" degrade to an empty
+# copy, the same as it already does everywhere else in this role.
+- name: Ensure this repo's group config tree exists, even empty
+  ansible.builtin.file:
+    path: "{{ role_path }}/files/groups"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
 # One subdirectory per Pi-hole group (e.g. groups/kids/); the reconciler
 # discovers them under PIHOLE_DIR and scopes each group's block lists + clients.
 - name: Deploy per-group config tree
