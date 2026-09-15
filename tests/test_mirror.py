@@ -752,6 +752,69 @@ def test_force_prune_captures_a_wholesale_deletion(tmp_path):
     assert h.clean_lines((cfg / "adlists.txt").read_text()) == []
 
 
+def test_evidence_does_not_require_the_row_to_be_managed(tmp_path):
+    # File-level presence, not managed-only, was the deliberate choice: the
+    # ownership comment is free text an operator can type in the UI, so
+    # trusting it for evidence would be trusting exactly the field a UI edit
+    # can rewrite. A hand-added row matching a file's line is evidence enough
+    # that this box has taken this file before.
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "allow.list").write_text("kept.example\ngone.example\n",
+                                    encoding="utf-8")
+    state = _only_default_group(
+        domains=[_domain("kept.example", "allow", "exact", [0])])  # hand-added
+
+    _merge(tmp_path, state, cfg)
+
+    assert h.clean_lines((cfg / "allow.list").read_text()) == ["kept.example"]
+
+
+def test_the_removed_count_is_what_left_not_what_changed(tmp_path, capsys):
+    # A run that drops a deleted entry and picks up a new one in the same file
+    # must count only the drop; a symmetric difference would count the
+    # addition too and tell the operator twice as many lines went missing.
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "allow.list").write_text("gone.example\nkept.example\n",
+                                    encoding="utf-8")
+    state = _only_default_group(
+        domains=[_domain("kept.example", "allow", "exact", [0], MANAGED),
+                 _domain("new.example", "allow", "exact", [0], MANAGED)])
+
+    _merge(tmp_path, state, cfg)
+
+    assert "allow.list (1 removed)" in capsys.readouterr().out
+
+
+def test_force_prune_never_reports_a_refusal(tmp_path, capsys):
+    # Under --force-prune the operator has already said the deletions were
+    # real; refused_prunes must not run at all, or its warning would
+    # contradict the flag that just overrode it.
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "adlists.txt").write_text("https://one.example/l.txt\n",
+                                     encoding="utf-8")
+
+    rc = h.main(["--merge", _state_file(tmp_path, _only_default_group()),
+                "--dir", str(cfg), "--force-prune"])
+
+    assert rc == h.OK
+    assert "left as they are" not in capsys.readouterr().err
+
+
+def test_a_declined_merge_says_declined_not_no_changes(tmp_path, capsys):
+    # "no changes" on a run that just refused to make one reads as clean.
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "adlists.txt").write_text("https://one.example/l.txt\n",
+                                     encoding="utf-8")
+
+    _merge(tmp_path, _only_default_group(), cfg)
+
+    assert "DECLINED" in capsys.readouterr().out
+
+
 def test_nothing_is_pruned_when_live_state_is_empty(tmp_path):
     # An unprovisioned or wiped box answers with nothing at all. Reading that as
     # "the operator deleted everything" would empty the config in one run.
