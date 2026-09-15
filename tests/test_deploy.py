@@ -212,6 +212,66 @@ def test_a_complete_config_root_is_missing_nothing(tmp_path):
     assert deploy.missing_inputs(str(tmp_path)) == []
 
 
+def test_an_absent_groups_tree_is_not_an_empty_one(tmp_path):
+    # groups/ is a second config root the top-level guard never looks at, and
+    # every group, deny list and client is sourced from nowhere else.
+    assert deploy.groups_root_missing(str(tmp_path))
+    (tmp_path / "groups").mkdir()
+    assert not deploy.groups_root_missing(str(tmp_path))
+
+
+def _stub_api(monkeypatch, get_responses):
+    """Replace deploy.api with a fake FTL that answers GET from get_responses
+    and records every call, so a test can assert what main() tried to do."""
+    calls = []
+
+    def stub(method, path, sid=None, body=None):
+        calls.append((method, path, body))
+        return 200, get_responses.get(path, {}) if method == "GET" else {}
+
+    monkeypatch.setattr(deploy, "api", stub)
+    return calls
+
+
+def test_an_absent_groups_tree_deletes_no_group_deny_entry_or_client(
+        tmp_path, monkeypatch):
+    # groups/ never existed here -- a half checkout, the wrong PIHOLE_DIR, a
+    # role that has not run yet. Every managed group, deny entry and client is
+    # sourced only from inside groups/, so none of it is known to be gone.
+    for name in ("adlists.txt", "allow.list", "allowlist-urls.txt"):
+        (tmp_path / name).write_text("", encoding="utf-8")
+    monkeypatch.setattr(deploy, "DIR", str(tmp_path))
+    monkeypatch.setattr(deploy, "GROUPS_DIR", str(tmp_path / "groups"))
+    monkeypatch.setattr(deploy, "PW", "")
+    monkeypatch.setattr(deploy, "fetch_ok", True)
+    monkeypatch.setattr(deploy, "changed", dict.fromkeys(deploy.changed, False))
+    monkeypatch.setattr(deploy, "collisions", [])
+
+    calls = _stub_api(monkeypatch, {
+        "/groups": {"groups": [
+            {"id": 0, "name": "Default", "comment": None},
+            {"id": 5, "name": "kids", "comment": deploy.MANAGED},
+        ]},
+        "/domains/allow/exact": {"domains": []},
+        "/domains/allow/regex": {"domains": []},
+        "/domains/deny/exact": {"domains": [
+            {"domain": "blocked.example", "type": "deny", "kind": "exact",
+             "comment": deploy.MANAGED, "groups": [5], "enabled": True}]},
+        "/domains/deny/regex": {"domains": []},
+        "/clients": {"clients": [
+            {"client": "192.168.1.50", "comment": deploy.MANAGED,
+             "groups": [5]}]},
+        "/lists?type=block": {"lists": []},
+    })
+
+    deploy.main()
+
+    destructive = [(m, p) for m, p, _ in calls
+                   if (m == "POST" and p.endswith(":batchDelete"))
+                   or (m == "DELETE" and p.startswith("/groups/"))]
+    assert destructive == []
+
+
 def test_a_settled_answer_is_not_retried_at_all():
     calls = []
 

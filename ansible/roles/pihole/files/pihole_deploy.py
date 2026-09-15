@@ -27,7 +27,8 @@ one (warned and skipped, so the rest of the run still converges).
 Structure: the pure functions below (clean_lines, is_regex, split_allow,
 host_domain, plan_membership, build_membership, network_wide, assemble_desired,
 normalize_groups, discover_groups, resolve_password, is_collision, is_transient,
-config_root_missing, missing_inputs) hold the decision logic and are unit-tested;
+config_root_missing, missing_inputs, groups_root_missing) hold the decision
+logic and are unit-tested;
 everything that touches the network or filesystem is the thin shell beneath them.
 retry_transient sits in that shell and is unit-tested too, by injecting its wait.
 """
@@ -411,6 +412,19 @@ def missing_inputs(root):
                   if not os.path.exists(os.path.join(root, n)))
 
 
+def groups_root_missing(root):
+    """True if this config's per-group tree is not there to be read at all.
+
+    Distinct from config_root_missing: the top-level files can be complete
+    while groups/ itself is missing, and every group, deny list, client and
+    group-scoped adlist is sourced only from inside it — so this alone has to
+    gate all four, the way missing_inputs gates the top-level files. An empty
+    (but present) groups/ is not this: that is every group having been
+    deleted on purpose, and must still reach the box.
+    """
+    return not os.path.isdir(os.path.join(root, "groups"))
+
+
 def read_path(path):
     """Cleaned lines of a config file, or [] if it doesn't exist."""
     if not os.path.exists(path):
@@ -542,12 +556,15 @@ def group_ids(sid):
     return {g["name"]: g["id"] for g in j.get("groups", [])}
 
 
-def reconcile_groups(sid, desired_names):
+def reconcile_groups(sid, desired_names, allow_remove=True):
     """Ensure a Pi-hole group exists for each configured group dir.
 
     Creates managed groups that are missing and removes managed groups no longer
     configured. The built-in "Default" group and any group a user made by hand
-    (comment != MANAGED) are left untouched. Returns name -> id for all groups.
+    (comment != MANAGED) are left untouched. allow_remove=False holds deletions
+    back the same way reconcile_membership does, for the same reason: groups/
+    itself being unreadable must not read as "no groups configured" here either.
+    Returns name -> id for all groups.
     """
     st, j = api("GET", "/groups", sid)
     if st != 200:
@@ -565,12 +582,17 @@ def reconcile_groups(sid, desired_names):
         changed["groups"] = True
         print(f"  + group {name}")
 
-    for name in remove:
-        st, j = api("DELETE", f"/groups/{urllib.parse.quote(name)}", sid)
-        if st not in (200, 204):
-            die(f"removing group {name!r} failed (HTTP {st}): {j}")
-        changed["groups"] = True
-        print(f"  - group {name}")
+    if remove and not allow_remove:
+        print(f"  ~ skipping removal of {len(remove)} group(s) "
+              "(a source failed to load; not removing to avoid data loss)",
+              file=sys.stderr)
+    else:
+        for name in remove:
+            st, j = api("DELETE", f"/groups/{urllib.parse.quote(name)}", sid)
+            if st not in (200, 204):
+                die(f"removing group {name!r} failed (HTTP {st}): {j}")
+            changed["groups"] = True
+            print(f"  - group {name}")
 
     return group_ids(sid)
 
@@ -583,10 +605,16 @@ def main():
     for name in absent:
         print(f"WARN: {name} is not in {DIR}; entries it would list are left "
               "alone rather than removed.", file=sys.stderr)
+    groups_readable = not groups_root_missing(DIR)
+    if not groups_readable:
+        print(f"WARN: {GROUPS_DIR} is not there; groups, deny lists, clients "
+              "and group-scoped adlists are left alone rather than removed.",
+              file=sys.stderr)
     sid = login()
     try:
         groups = discover_groups(GROUPS_DIR)
-        name_to_id = reconcile_groups(sid, [name for name, _ in groups])
+        name_to_id = reconcile_groups(sid, [name for name, _ in groups],
+                                      allow_remove=groups_readable)
 
         # Allowlists apply network-wide (default group only).
         allow_exact, allow_regex = split_allow(read_file("allow.list"))
@@ -612,10 +640,14 @@ def main():
         ]
         desired = assemble_desired(read_file("adlists.txt"), group_inputs)
         reconcile_membership(sid, ADLIST, desired["adlists"],
-                             allow_remove="adlists.txt" not in absent)
-        reconcile_membership(sid, deny_kind("exact"), desired["deny_exact"])
-        reconcile_membership(sid, deny_kind("regex"), desired["deny_regex"])
-        reconcile_membership(sid, CLIENT, desired["clients"])
+                             allow_remove="adlists.txt" not in absent
+                             and groups_readable)
+        reconcile_membership(sid, deny_kind("exact"), desired["deny_exact"],
+                             allow_remove=groups_readable)
+        reconcile_membership(sid, deny_kind("regex"), desired["deny_regex"],
+                             allow_remove=groups_readable)
+        reconcile_membership(sid, CLIENT, desired["clients"],
+                             allow_remove=groups_readable)
 
         # Apply: gravity re-fetches adlists (needed for adlist changes); a plain DNS
         # restart is enough to pick up domain-, group-, and client-list changes.
