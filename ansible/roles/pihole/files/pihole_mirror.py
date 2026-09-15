@@ -802,15 +802,20 @@ def report(root, plan, paths, dry_run, refused=(), removed=None):
               file=sys.stderr)
 
     if dry_run:
-        print("DRIFT" if paths else ("DECLINED" if refused else "in sync"))
+        print("DRIFT" if paths or empty else ("DECLINED" if refused else "in sync"))
     else:
         print("CHANGED" if paths else ("DECLINED" if refused else "no changes"))
-    unrecordable = len(plan.unroutable) + len(empty)
+    # A group with no config directory names a file a person can create --
+    # groups/name/ with a block.list and clients.txt -- so it belongs with
+    # drift, which a check does not pass on, not with plan.unroutable, which
+    # is the config format's own permanent limitations and which it does.
+    unrecordable = len(plan.unroutable)
     # Counted apart because they are different things: one is a number of files
     # a mirror run would write, the other a number of settings it cannot.
     parts = []
-    if dry_run and paths:
-        parts.append(f"{len(paths)} config file(s) a mirror run would write")
+    if dry_run and (paths or empty):
+        parts.append(f"{len(paths) + len(empty)} config file(s) a mirror run "
+                     "would write")
     if unrecordable:
         parts.append(f"{unrecordable} setting(s) no config file can record")
     if refused:
@@ -822,10 +827,10 @@ def report(root, plan, paths, dry_run, refused=(), removed=None):
         # of ignoring the check, taught. A declined prune does fail, so it says
         # ERROR and gets a line of its own: the per-file warnings scroll past in
         # the playbook's debug dump and the summary is what survives it.
-        level = "ERROR" if (dry_run and paths) or refused else "WARN"
+        level = "ERROR" if (dry_run and (paths or empty)) or refused else "WARN"
         print(f"{level}: " + ", and ".join(parts) + " (see warnings above)",
               file=sys.stderr)
-    if dry_run and paths:
+    if dry_run and (paths or empty):
         return DRIFT
     # A refusal outranks an unexpressible setting. Both playbooks pass 4,
     # deliberately, because an unexpressible setting has no fix to apply — so

@@ -675,6 +675,23 @@ def test_the_report_says_how_many_entries_each_file_lost(tmp_path, capsys):
     assert "adlists.txt (2 removed)" in capsys.readouterr().out
 
 
+def test_an_undescribed_group_is_drift_not_unrecordable(tmp_path, capsys):
+    # A group made by hand in the admin UI has no config directory yet. A
+    # person can create one -- unlike a genuinely unexpressible setting -- so
+    # this belongs with drift, which a check does not pass on, not with the
+    # format's permanent limitations, which it does.
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    state = _state(groups=[
+        {"id": 0, "name": "Default", "comment": None},
+        {"id": 9, "name": "guests", "comment": "made in the admin UI"}])
+
+    rc = _check(tmp_path, state, cfg)
+
+    assert rc == h.DRIFT
+    assert "guests" in capsys.readouterr().err
+
+
 def test_a_refusal_outranks_a_setting_that_cannot_be_expressed(tmp_path, capsys):
     # Both playbooks pass exit 4, because an unexpressible setting has no fix.
     # Reporting 4 for a run that also declined to prune hid the refusal behind
