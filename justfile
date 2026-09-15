@@ -34,10 +34,10 @@ deploy:
 # Additions and deletions both, so the UI can be where you work. Writes into
 # ansible/roles/pihole/files/; review with `git diff` before committing. Never
 # touches the Pi. Declines to prune a file the box holds nothing of, and says
-# so; pass --force-prune to the script if everything really was deleted.
+# so; re-run as `just mirror force=true` if everything really was deleted.
 [doc("Capture changes made by hand in the admin UI into the config files")]
-mirror:
-    cd ansible && ansible-playbook mirror.yml
+mirror force="false":
+    cd ansible && ansible-playbook mirror.yml -e mirror_force_prune={{force}}
 
 # Run after committing the mirror diff AND deploying it: adopt refuses while the
 # Pi is reconciling from config files other than the ones you just reviewed.

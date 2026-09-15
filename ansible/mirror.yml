@@ -28,6 +28,7 @@
         cmd: >-
           {{ playbook_dir }}/roles/pihole/files/pihole_mirror.py
           --merge - --dir {{ playbook_dir }}/roles/pihole/files
+          {{ '--force-prune' if mirror_force_prune | default(false) | bool else '' }}
         stdin: "{{ pihole_state.stdout }}"
       delegate_to: localhost
       become: false
@@ -52,5 +53,6 @@
         msg: >-
           The mirror declined to capture some deletions, or it could not run
           (exit {{ pihole_mirror.rc }}). See above: deploy the committed files
-          first, or pass --force-prune if everything really was deleted.
+          first, or re-run as `just mirror force=true` if everything really
+          was deleted.
       when: pihole_mirror.rc not in [0, 4]

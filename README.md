@@ -234,8 +234,8 @@ while a Pi that never did holds none of it. So mirroring against a box the
 committed files were never deployed to leaves them alone rather than emptying
 them, and names each file it left alone with the count involved. The one
 case that misreads is a file whose every entry really was deleted in the admin
-UI; the mirror declines that too (exit 5), and `--force-prune` is how you say it
-was deliberate.
+UI; the mirror declines that too (exit 5), and `just mirror force=true` is how
+you say it was deliberate.
 
 > **Known gap.** Domains fetched from `allowlist-urls.txt` are pushed to Pi-hole
 > as ordinary allow entries, so the mirror cannot tell them from ones you added
@@ -410,11 +410,15 @@ Change the allowed subnet via `hardening_lan_subnet` in `roles/hardening/default
   else that file lists, so the entries missing from it were never deleted there;
   most likely you are mirroring a Pi the committed files were never deployed to.
   Run `just deploy` first. If you really did delete every entry in that file in
-  the admin UI, say so: `pihole_mirror.py --merge ... --force-prune`.
+  the admin UI, say so: `just mirror force=true`.
 - **`just deploy` warns that a config file is not there** — a top-level file
   (`adlists.txt`, `allow.list`, `allowlist-urls.txt`) is missing, so this run
   cannot know what it would have listed and removes nothing for that kind.
   Restore the file, or add it empty if you meant it to list nothing.
+- **`just deploy` warns that `groups/` is not there** — the whole per-group
+  tree is missing, so this run cannot know what any group, deny list or
+  client should be and removes none of them. Restore `ansible/roles/pihole/
+  files/groups/`, even empty, if you meant every group to be gone.
 - **`verify.yml` reports drift** — Pi-hole carries settings no config file
   records. `just mirror` writes them into the files; review with `git diff`
   and commit.
