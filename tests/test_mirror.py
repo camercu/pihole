@@ -714,6 +714,29 @@ def test_refusing_to_prune_is_reported_and_fails_the_run(tmp_path, capsys):
     assert "2" in said
 
 
+def test_a_deletion_survives_when_the_remaining_row_is_protected(tmp_path):
+    # allow.list lists three domains, all previously captured. In the UI the
+    # operator deletes two of them and ticks a group on the third, so the box
+    # now holds only a row the config format cannot place network-wide -- a
+    # protected row, not a routed one, but proof this file was deployed here.
+    # box_holds_any_of ignoring plan.protected reads "nothing routed" as
+    # "never deployed", refuses the two real deletions, and tells the
+    # operator to deploy first -- which would undo them.
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "allow.list").write_text("a.example\nb.example\nc.example\n",
+                                    encoding="utf-8")
+    groups = [{"id": 0, "name": "Default", "comment": None},
+             {"id": 2, "name": "kids", "comment": MANAGED}]
+    state = _state(groups=groups,
+                   domains=[_domain("a.example", "allow", "exact", [2], MANAGED)])
+
+    rc = _merge(tmp_path, state, cfg)
+
+    assert (cfg / "allow.list").read_text() == "a.example\n"
+    assert rc == h.OK
+
+
 def test_force_prune_captures_a_wholesale_deletion(tmp_path):
     # The one case the evidence rule declines wrongly: every entry really was
     # deleted in the UI, so nothing managed is left to prove the box took the

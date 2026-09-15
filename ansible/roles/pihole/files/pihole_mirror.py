@@ -589,8 +589,14 @@ def box_holds_any_of(plan, path, listed):
     file still holds something from it, while a box that never did holds none
     of it. Ownership is deliberately not consulted, because the comment that
     records it is free text an operator can type in the admin UI.
+
+    A row can still be held while unroutable — a managed allow entry someone
+    scoped to a group, say — so plan.protected counts as held too; both other
+    callers (refused_prunes, pending_changes) already read it that way, and a
+    file whose only surviving row is protected is not a file nothing was ever
+    deployed from.
     """
-    return bool(set(plan.files.get(path, ())) & listed)
+    return bool((set(plan.files.get(path, ())) | plan.protected) & listed)
 
 
 def removed_counts(root, pending):
