@@ -149,6 +149,26 @@ def discover_groups(groups_dir):
     return out
 
 
+def manifest_key(kind_label, comment):
+    """Manifest key for one reconcile call.
+
+    kind.label alone collides when two calls share a collection under
+    different comments (allow/exact local vs. allow/exact fetched); comment
+    alone collides across kinds that share MANAGED (deny/exact, deny/regex,
+    ...). Together they name exactly one call.
+    """
+    return f"{kind_label} [{comment}]"
+
+
+def known_identities(manifest, kind_label, comment):
+    """The identities manifest says this call created, or None to trust the
+    comment alone -- no manifest yet (first run since it existed) reads the
+    same as no restriction, not as "nothing is ours"."""
+    if manifest is None:
+        return None
+    return set(manifest.get(manifest_key(kind_label, comment), []))
+
+
 class Owned(NamedTuple):
     """What a config file asserts about a row the reconciler owns.
 
@@ -293,6 +313,12 @@ API = os.environ.get("PIHOLE_API", "http://localhost/api")
 PW = resolve_password(os.environ)
 DIR = os.environ.get("PIHOLE_DIR", "/etc/pihole/managed")
 GROUPS_DIR = os.path.join(DIR, "groups")  # one subdir per Pi-hole group
+# What the last successful run itself created, keyed by kind + comment so two
+# reconciles sharing a collection (allow.list vs. allowlist-urls.txt's fetched
+# domains) never see each other's identities. The MANAGED comment alone is not
+# proof of authorship -- it is free text the admin UI lets anyone type -- so
+# a row is only ever deleted when both agree it is ours.
+MANIFEST = os.path.join(DIR, ".manifest.json")
 
 DEFAULT_GROUP = 0  # Pi-hole's built-in "Default" group; never created or removed
 
@@ -438,6 +464,19 @@ def read_file(name):
     return read_path(os.path.join(DIR, name))
 
 
+def read_manifest(path):
+    """What the last successful run recorded, or None if there is none yet."""
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def write_manifest(path, manifest):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, sort_keys=True, indent=2)
+
+
 def fetch_domains(url):
     """Fetch a remote allowlist; tolerate plain or hosts-format lines.
 
@@ -484,7 +523,8 @@ def add_entries(sid, kind, items, extra):
     return added
 
 
-def reconcile_membership(sid, kind, desired, allow_remove=True, comment=MANAGED):
+def reconcile_membership(sid, kind, desired, allow_remove=True, comment=MANAGED,
+                         known=None, record=None):
     """Reconcile one list kind against {entry: Owned}.
 
     The only reconcile path, so every kind is held to the same comparison.
@@ -495,6 +535,14 @@ def reconcile_membership(sid, kind, desired, allow_remove=True, comment=MANAGED)
     comment distinguishes rows this call owns from rows another call against the
     same collection owns (fetched allowlist domains vs. allow.list's own), so
     two calls sharing a kind never see, update or remove each other's rows.
+
+    known, from the last successful run's manifest, is the second half of
+    "ours": the comment alone is free text the admin UI lets anyone type, so a
+    row only counts as this call's to update or delete when both agree. None
+    (no manifest yet) trusts the comment alone, same as before the manifest
+    existed. record, when given, is filled with this run's desired identities
+    under this call's key, for the manifest the caller writes once every call
+    has finished.
     """
     assert kind.item_path is not None, f"{kind.label} kind has no PUT item_path"
     st, j = api("GET", kind.path, sid)
@@ -506,7 +554,8 @@ def reconcile_membership(sid, kind, desired, allow_remove=True, comment=MANAGED)
     current = {x[kind.field]: Owned(frozenset(normalize_groups(x.get("groups", []))),
                                     bool(x.get("enabled", True)) if kind.enabled
                                     else True)
-               for x in j.get(kind.collection, []) if x.get("comment") == comment}
+               for x in j.get(kind.collection, []) if x.get("comment") == comment
+               and (known is None or x[kind.field] in known)}
     add, update, remove = plan_membership(desired, current)
 
     def body_for(owned):
@@ -540,6 +589,9 @@ def reconcile_membership(sid, kind, desired, allow_remove=True, comment=MANAGED)
         changed[kind.bucket] = True
         print(f"  - {len(remove)} {kind.label}: {', '.join(sorted(remove))}")
 
+    if record is not None:
+        record[manifest_key(kind.label, comment)] = sorted(desired)
+
 
 def _bucket_by_groups(add):
     """Group an {entry: Owned} add-map into (Owned, [entries]).
@@ -563,7 +615,7 @@ def group_ids(sid):
     return {g["name"]: g["id"] for g in j.get("groups", [])}
 
 
-def reconcile_groups(sid, desired_names, allow_remove=True):
+def reconcile_groups(sid, desired_names, allow_remove=True, known=None, record=None):
     """Ensure a Pi-hole group exists for each configured group dir.
 
     Creates managed groups that are missing and removes managed groups no longer
@@ -571,13 +623,17 @@ def reconcile_groups(sid, desired_names, allow_remove=True):
     (comment != MANAGED) are left untouched. allow_remove=False holds deletions
     back the same way reconcile_membership does, for the same reason: groups/
     itself being unreadable must not read as "no groups configured" here either.
+    known/record carry the manifest the same way reconcile_membership's do: a
+    group only deletes when the last successful run's own record agrees the
+    MANAGED comment is telling the truth.
     Returns name -> id for all groups.
     """
     st, j = api("GET", "/groups", sid)
     if st != 200:
         die(f"GET groups failed (HTTP {st}): {j}")
     present = {g["name"] for g in j.get("groups", [])}
-    managed = {g["name"] for g in j.get("groups", []) if g.get("comment") == MANAGED}
+    managed = {g["name"] for g in j.get("groups", [])
+              if g.get("comment") == MANAGED and (known is None or g["name"] in known)}
     add = [n for n in dict.fromkeys(desired_names) if n not in present]
     remove = sorted(n for n in managed if n not in set(desired_names))
 
@@ -601,6 +657,9 @@ def reconcile_groups(sid, desired_names, allow_remove=True):
             changed["groups"] = True
             print(f"  - group {name}")
 
+    if record is not None:
+        record["groups"] = sorted(dict.fromkeys(desired_names))
+
     return group_ids(sid)
 
 
@@ -617,11 +676,15 @@ def main():
         print(f"WARN: {GROUPS_DIR} is not there; groups, deny lists, clients "
               "and group-scoped adlists are left alone rather than removed.",
               file=sys.stderr)
+    manifest_in = read_manifest(MANIFEST)
+    manifest_out = {}
     sid = login()
     try:
         groups = discover_groups(GROUPS_DIR)
-        name_to_id = reconcile_groups(sid, [name for name, _ in groups],
-                                      allow_remove=groups_readable)
+        name_to_id = reconcile_groups(
+            sid, [name for name, _ in groups], allow_remove=groups_readable,
+            known=known_identities(manifest_in, "groups", MANAGED),
+            record=manifest_out)
 
         # Allowlists apply network-wide (default group only). Local and fetched
         # entries reconcile separately, under distinct comments: allow.list's
@@ -630,18 +693,24 @@ def main():
         # two must never be able to mistake one set for the other's rows.
         local_allow_exact, allow_regex = split_allow(read_file("allow.list"))
         local_readable = "allow.list" not in absent
-        reconcile_membership(sid, allow_kind("exact"), network_wide(local_allow_exact),
-                             allow_remove=local_readable)
-        reconcile_membership(sid, allow_kind("regex"), network_wide(allow_regex),
-                             allow_remove=local_readable)
+        reconcile_membership(
+            sid, allow_kind("exact"), network_wide(local_allow_exact),
+            allow_remove=local_readable, record=manifest_out,
+            known=known_identities(manifest_in, "allow/exact", MANAGED))
+        reconcile_membership(
+            sid, allow_kind("regex"), network_wide(allow_regex),
+            allow_remove=local_readable, record=manifest_out,
+            known=known_identities(manifest_in, "allow/regex", MANAGED))
 
         fetched, fetched_ok = [], "allowlist-urls.txt" not in absent
         for url in read_file("allowlist-urls.txt"):
             domains, ok = fetch_domains(url)
             fetched += domains
             fetched_ok = fetched_ok and ok
-        reconcile_membership(sid, allow_kind("exact"), network_wide(fetched),
-                             allow_remove=fetched_ok, comment=MANAGED_FETCHED)
+        reconcile_membership(
+            sid, allow_kind("exact"), network_wide(fetched),
+            allow_remove=fetched_ok, comment=MANAGED_FETCHED, record=manifest_out,
+            known=known_identities(manifest_in, "allow/exact", MANAGED_FETCHED))
 
         # Read each group's files, then assemble the desired group-scoped state (the
         # product decisions live in assemble_desired, unit-tested). Block adlists span
@@ -654,15 +723,22 @@ def main():
             for name, path in groups
         ]
         desired = assemble_desired(read_file("adlists.txt"), group_inputs)
-        reconcile_membership(sid, ADLIST, desired["adlists"],
-                             allow_remove="adlists.txt" not in absent
-                             and groups_readable)
-        reconcile_membership(sid, deny_kind("exact"), desired["deny_exact"],
-                             allow_remove=groups_readable)
-        reconcile_membership(sid, deny_kind("regex"), desired["deny_regex"],
-                             allow_remove=groups_readable)
-        reconcile_membership(sid, CLIENT, desired["clients"],
-                             allow_remove=groups_readable)
+        reconcile_membership(
+            sid, ADLIST, desired["adlists"], record=manifest_out,
+            allow_remove="adlists.txt" not in absent and groups_readable,
+            known=known_identities(manifest_in, ADLIST.label, MANAGED))
+        reconcile_membership(
+            sid, deny_kind("exact"), desired["deny_exact"],
+            allow_remove=groups_readable, record=manifest_out,
+            known=known_identities(manifest_in, "deny/exact", MANAGED))
+        reconcile_membership(
+            sid, deny_kind("regex"), desired["deny_regex"],
+            allow_remove=groups_readable, record=manifest_out,
+            known=known_identities(manifest_in, "deny/regex", MANAGED))
+        reconcile_membership(
+            sid, CLIENT, desired["clients"], record=manifest_out,
+            allow_remove=groups_readable,
+            known=known_identities(manifest_in, CLIENT.label, MANAGED))
 
         # Apply: gravity re-fetches adlists (needed for adlist changes); a plain DNS
         # restart is enough to pick up domain-, group-, and client-list changes.
@@ -674,6 +750,8 @@ def main():
         elif any(changed.values()):
             print("Reloading DNS...")
             api("POST", "/action/restartdns", sid)
+
+        write_manifest(MANIFEST, manifest_out)
 
         print("CHANGED" if any(changed.values()) else "no changes")
     finally:

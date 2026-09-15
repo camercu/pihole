@@ -281,6 +281,7 @@ def test_an_absent_groups_tree_deletes_no_group_deny_entry_or_client(
         (tmp_path / name).write_text("", encoding="utf-8")
     monkeypatch.setattr(deploy, "DIR", str(tmp_path))
     monkeypatch.setattr(deploy, "GROUPS_DIR", str(tmp_path / "groups"))
+    monkeypatch.setattr(deploy, "MANIFEST", str(tmp_path / ".manifest.json"))
     monkeypatch.setattr(deploy, "PW", "")
     monkeypatch.setattr(deploy, "changed", dict.fromkeys(deploy.changed, False))
     monkeypatch.setattr(deploy, "collisions", [])
@@ -319,6 +320,7 @@ def _base_state(monkeypatch, tmp_path, allow_list="", allowlist_urls=""):
     (tmp_path / "groups").mkdir()
     monkeypatch.setattr(deploy, "DIR", str(tmp_path))
     monkeypatch.setattr(deploy, "GROUPS_DIR", str(tmp_path / "groups"))
+    monkeypatch.setattr(deploy, "MANIFEST", str(tmp_path / ".manifest.json"))
     monkeypatch.setattr(deploy, "PW", "")
     monkeypatch.setattr(deploy, "changed", dict.fromkeys(deploy.changed, False))
     monkeypatch.setattr(deploy, "collisions", [])
@@ -332,6 +334,67 @@ _EMPTY_COLLECTIONS = {
     "/clients": {"clients": []},
     "/lists?type=block": {"lists": []},
 }
+
+
+def test_first_run_ever_trusts_the_managed_comment_alone(tmp_path, monkeypatch):
+    # No manifest yet -- the very first run under this code, or a config root
+    # that just moved. Trust the comment alone, same as every run before the
+    # manifest existed, rather than silently keeping every row forever.
+    _base_state(monkeypatch, tmp_path)
+
+    calls = _stub_api(monkeypatch, {
+        "/groups": {"groups": [{"id": 0, "name": "Default", "comment": None}]},
+        "/domains/allow/exact": {"domains": [
+            {"domain": "stale.example", "type": "allow", "kind": "exact",
+             "comment": deploy.MANAGED, "groups": [0], "enabled": True}]},
+        **_EMPTY_COLLECTIONS,
+    })
+
+    deploy.main()
+
+    removed = [item["item"] for m, p, b in calls
+              if m == "POST" and p == "/domains:batchDelete"
+              for item in b]
+    assert "stale.example" in removed
+
+
+def test_a_hand_typed_managed_comment_survives_when_the_manifest_disagrees(
+        tmp_path, monkeypatch):
+    # The admin UI lets an operator type "managed by ansible" into any
+    # comment box. The comment alone used to be enough to delete a row on
+    # that word; now the last run's own manifest has to agree it created it.
+    _base_state(monkeypatch, tmp_path)
+    deploy.write_manifest(str(tmp_path / ".manifest.json"),
+                          {"allow/exact [managed by ansible]": []})
+
+    calls = _stub_api(monkeypatch, {
+        "/groups": {"groups": [{"id": 0, "name": "Default", "comment": None}]},
+        "/domains/allow/exact": {"domains": [
+            {"domain": "forged.example", "type": "allow", "kind": "exact",
+             "comment": deploy.MANAGED, "groups": [0], "enabled": True}]},
+        **_EMPTY_COLLECTIONS,
+    })
+
+    deploy.main()
+
+    removed = [item["item"] for m, p, b in calls
+              if m == "POST" and p == "/domains:batchDelete"
+              for item in b]
+    assert "forged.example" not in removed
+
+
+def test_the_manifest_records_this_runs_own_desired_identities(tmp_path, monkeypatch):
+    _base_state(monkeypatch, tmp_path, allow_list="kept.example\n")
+    _stub_api(monkeypatch, {
+        "/groups": {"groups": [{"id": 0, "name": "Default", "comment": None}]},
+        "/domains/allow/exact": {"domains": []},
+        **_EMPTY_COLLECTIONS,
+    })
+
+    deploy.main()
+
+    manifest = deploy.read_manifest(str(tmp_path / ".manifest.json"))
+    assert manifest["allow/exact [managed by ansible]"] == ["kept.example"]
 
 
 def test_a_local_deletion_reaches_the_box_even_when_a_remote_list_is_down(

@@ -202,6 +202,13 @@ you also add an entry (adlist, domain, or client) **by hand** in the admin UI
 that a config file already manages, it's skipped with a warning and the run exits
 non-zero so you notice — remove the hand-added copy to let the role manage it.
 
+"Managed by this role" is not decided by the `managed by ansible` comment
+alone — that box is free text the admin UI lets anyone type, so typing it on
+a hand-added row would otherwise hand that row to the next deploy for
+deletion. The role also keeps `.manifest.json` next to the config files on
+the Pi, recording what it itself created last run; a row only deletes when
+the comment and the manifest agree.
+
 Ownership is total: a file listing an entry says which groups it belongs to *and*
 that it is switched on. Toggling a managed row off in the admin UI is undone on
 the next run, because nothing else would put it back — mirroring skips rows the
