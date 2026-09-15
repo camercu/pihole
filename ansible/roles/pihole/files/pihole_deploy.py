@@ -313,11 +313,15 @@ API = os.environ.get("PIHOLE_API", "http://localhost/api")
 PW = resolve_password(os.environ)
 DIR = os.environ.get("PIHOLE_DIR", "/etc/pihole/managed")
 GROUPS_DIR = os.path.join(DIR, "groups")  # one subdir per Pi-hole group
-# What the last successful run itself created, keyed by kind + comment so two
+# What this reconciler itself created, keyed by kind + comment so two
 # reconciles sharing a collection (allow.list vs. allowlist-urls.txt's fetched
 # domains) never see each other's identities. The MANAGED comment alone is not
 # proof of authorship -- it is free text the admin UI lets anyone type -- so
-# a row is only ever deleted when both agree it is ours.
+# a row is only ever deleted when both agree it is ours. Written after each
+# reconcile call, not once at the end, so an interruption partway through a
+# run loses at most the calls it never reached -- not this run's own already-
+# confirmed identities, which would otherwise read as hand-added collisions
+# on the next run.
 MANIFEST = os.path.join(DIR, ".manifest.json")
 
 DEFAULT_GROUP = 0  # Pi-hole's built-in "Default" group; never created or removed
@@ -499,28 +503,32 @@ def add_entries(sid, kind, items, extra):
     FTL fails the whole batch if any single item already exists, so on a collision
     we retry each item alone: non-colliding ones still apply; colliders are recorded
     (see `collisions`) and skipped so the rest of the run still converges. A
-    non-collision error is still fatal. Returns the number actually added.
+    non-collision error is still fatal. Returns (count actually added, items that
+    collided) -- the caller needs the second half too, since a collided identity
+    was never actually created and must not be recorded as this run's own.
     """
     if not items:
-        return 0
+        return 0, []
     st, j = api("POST", kind.path, sid, {kind.field: items, **extra})
     if st in (200, 201):
-        return len(items)
+        return len(items), []
     if not is_collision(st, j):
         die(f"adding {kind.label} failed (HTTP {st}): {j}")
     added = 0
+    collided = []
     for it in items:
         st, j = api("POST", kind.path, sid, {kind.field: [it], **extra})
         if st in (200, 201):
             added += 1
         elif is_collision(st, j):
             collisions.append((kind.label, it))
+            collided.append(it)
             print(f"WARN: {kind.label} {it!r} already exists as a hand-added entry; "
                   "remove it (Pi-hole UI or config) so it can be managed.",
                   file=sys.stderr)
         else:
             die(f"adding {kind.label} {it!r} failed (HTTP {st}): {j}")
-    return added
+    return added, collided
 
 
 def reconcile_membership(sid, kind, desired, allow_remove=True, comment=MANAGED,
@@ -564,8 +572,10 @@ def reconcile_membership(sid, kind, desired, allow_remove=True, comment=MANAGED,
         state = {"enabled": owned.enabled} if kind.enabled else {}
         return {"comment": comment, "groups": sorted(owned.groups), **state}
 
+    collided_this_call = set()
     for owned, items in _bucket_by_groups(add):
-        added = add_entries(sid, kind, items, body_for(owned))
+        added, collided = add_entries(sid, kind, items, body_for(owned))
+        collided_this_call.update(collided)
         if added:
             changed[kind.bucket] = True
             print(f"  + {added} {kind.label} -> groups {sorted(owned.groups)}")
@@ -590,7 +600,11 @@ def reconcile_membership(sid, kind, desired, allow_remove=True, comment=MANAGED,
         print(f"  - {len(remove)} {kind.label}: {', '.join(sorted(remove))}")
 
     if record is not None:
-        record[manifest_key(kind.label, comment)] = sorted(desired)
+        # A collided identity was never actually created under this comment;
+        # recording it as ours anyway is what let a later, unrelated comment
+        # edit silently hand the row over.
+        record[manifest_key(kind.label, comment)] = sorted(
+            set(desired) - collided_this_call)
 
 
 def _bucket_by_groups(add):
@@ -671,7 +685,12 @@ def reconcile_groups(sid, desired_names, allow_remove=True, known=None, record=N
             print(f"  - group {name}")
 
     if record is not None:
-        record["groups"] = sorted(dict.fromkeys(desired_names))
+        # A collided name was never actually created under this role; same
+        # reasoning as reconcile_membership's own collided_this_call.
+        # A collided name was never actually created under this role; same
+        # reasoning as reconcile_membership's own collided_this_call.
+        record["groups"] = sorted(n for n in dict.fromkeys(desired_names)
+                                  if n not in collided)
 
     return group_ids(sid), set(collided)
 
@@ -698,6 +717,7 @@ def main():
             sid, [name for name, _ in groups], allow_remove=groups_readable,
             known=known_identities(manifest_in, "groups", MANAGED),
             record=manifest_out)
+        write_manifest(MANIFEST, manifest_out)
         # A collided group's directory is not this run's to write into; its
         # config stays undeployed (drift) rather than landing in someone
         # else's group.
@@ -715,10 +735,12 @@ def main():
             sid, allow_kind("exact"), network_wide(local_allow_exact),
             allow_remove=local_readable, record=manifest_out,
             known=known_identities(manifest_in, "allow/exact", MANAGED))
+        write_manifest(MANIFEST, manifest_out)
         reconcile_membership(
             sid, allow_kind("regex"), network_wide(allow_regex),
             allow_remove=local_readable, record=manifest_out,
             known=known_identities(manifest_in, "allow/regex", MANAGED))
+        write_manifest(MANIFEST, manifest_out)
 
         fetched, fetched_ok = [], "allowlist-urls.txt" not in absent
         for url in read_file("allowlist-urls.txt"):
@@ -729,6 +751,7 @@ def main():
             sid, allow_kind("exact"), network_wide(fetched),
             allow_remove=fetched_ok, comment=MANAGED_FETCHED, record=manifest_out,
             known=known_identities(manifest_in, "allow/exact", MANAGED_FETCHED))
+        write_manifest(MANIFEST, manifest_out)
 
         # Read each group's files, then assemble the desired group-scoped state (the
         # product decisions live in assemble_desired, unit-tested). Block adlists span
@@ -745,18 +768,22 @@ def main():
             sid, ADLIST, desired["adlists"], record=manifest_out,
             allow_remove="adlists.txt" not in absent and groups_readable,
             known=known_identities(manifest_in, ADLIST.label, MANAGED))
+        write_manifest(MANIFEST, manifest_out)
         reconcile_membership(
             sid, deny_kind("exact"), desired["deny_exact"],
             allow_remove=groups_readable, record=manifest_out,
             known=known_identities(manifest_in, "deny/exact", MANAGED))
+        write_manifest(MANIFEST, manifest_out)
         reconcile_membership(
             sid, deny_kind("regex"), desired["deny_regex"],
             allow_remove=groups_readable, record=manifest_out,
             known=known_identities(manifest_in, "deny/regex", MANAGED))
+        write_manifest(MANIFEST, manifest_out)
         reconcile_membership(
             sid, CLIENT, desired["clients"], record=manifest_out,
             allow_remove=groups_readable,
             known=known_identities(manifest_in, CLIENT.label, MANAGED))
+        write_manifest(MANIFEST, manifest_out)
 
         # Apply: gravity re-fetches adlists (needed for adlist changes); a plain DNS
         # restart is enough to pick up domain-, group-, and client-list changes.
@@ -768,8 +795,6 @@ def main():
         elif any(changed.values()):
             print("Reloading DNS...")
             api("POST", "/action/restartdns", sid)
-
-        write_manifest(MANIFEST, manifest_out)
 
         print("CHANGED" if any(changed.values()) else "no changes")
     finally:

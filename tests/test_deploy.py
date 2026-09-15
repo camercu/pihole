@@ -411,6 +411,25 @@ def test_a_hand_added_group_is_not_silently_taken_over(tmp_path, monkeypatch, ca
     assert "teens" in capsys.readouterr().err
 
 
+def test_a_collided_group_is_not_recorded_as_the_managed_identity(monkeypatch):
+    # "teens" already exists as a hand-added group; reconcile_groups skips it
+    # (a collision). The manifest must not remember it as ours either, for
+    # the same reason a collided domain must not be.
+    def stub(method, path, sid=None, body=None):
+        if method == "GET":
+            return 200, {"groups": [
+                {"id": 0, "name": "Default", "comment": None},
+                {"id": 7, "name": "teens", "comment": "made in the admin UI"}]}
+        return 200, {}
+    monkeypatch.setattr(deploy, "api", stub)
+    monkeypatch.setattr(deploy, "collisions", [])
+    record = {}
+
+    deploy.reconcile_groups("sid", ["teens"], record=record)
+
+    assert record["groups"] == []
+
+
 def test_the_manifest_records_this_runs_own_desired_identities(tmp_path, monkeypatch):
     _base_state(monkeypatch, tmp_path, allow_list="kept.example\n")
     _stub_api(monkeypatch, {
@@ -423,6 +442,33 @@ def test_the_manifest_records_this_runs_own_desired_identities(tmp_path, monkeyp
 
     manifest = deploy.read_manifest(str(tmp_path / ".manifest.json"))
     assert manifest["allow/exact [managed by ansible]"] == ["kept.example"]
+
+
+def test_an_interrupted_run_keeps_the_manifest_entries_it_already_confirmed(
+        tmp_path, monkeypatch):
+    # main() dies partway through -- a later GET fails for reasons unrelated
+    # to anything reconciled so far. Everything already reconciled must
+    # already be durable, or the next run would misread its own, real,
+    # just-created row as a hand-added collision.
+    _base_state(monkeypatch, tmp_path, allow_list="kept.example\n")
+
+    def stub(method, path, sid=None, body=None):
+        if method == "GET":
+            if path == "/clients":
+                return 500, {"error": "boom"}
+            return 200, {
+                "/groups": {"groups": [
+                    {"id": 0, "name": "Default", "comment": None}]},
+            }.get(path, {})
+        return 200, {}
+    monkeypatch.setattr(deploy, "api", stub)
+
+    with pytest.raises(SystemExit):
+        deploy.main()
+
+    manifest = deploy.read_manifest(str(tmp_path / ".manifest.json"))
+    assert manifest["allow/exact [managed by ansible]"] == ["kept.example"]
+    assert "client [managed by ansible]" not in manifest
 
 
 def test_a_local_deletion_reaches_the_box_even_when_a_remote_list_is_down(
@@ -542,6 +588,31 @@ def test_reconcile_membership_rejects_kind_without_item_path():
     assert pathless.item_path is None
     with pytest.raises(AssertionError):
         deploy.reconcile_membership(None, pathless, {})
+
+
+def test_a_collided_add_is_not_recorded_as_the_managed_identity(monkeypatch):
+    # A hand-added row and a config-file entry share a name; the add collides
+    # and is skipped. The manifest must not remember it as ours anyway -- a
+    # later comment edit to exactly MANAGED would otherwise silently absorb
+    # it, and a run after that could delete a row this reconciler never
+    # created.
+    monkeypatch.setattr(deploy, "collisions", [])
+
+    def stub(method, path, sid=None, body=None):
+        if method == "GET":
+            return 200, {"domains": []}
+        if method == "POST":
+            return 400, {"error": {"message": "already present"}}
+        return 200, {}
+    monkeypatch.setattr(deploy, "api", stub)
+    record = {}
+
+    deploy.reconcile_membership(
+        "sid", deploy.allow_kind("exact"),
+        deploy.network_wide(["shared.example"]), record=record)
+
+    assert deploy.collisions == [("allow/exact", "shared.example")]
+    assert record["allow/exact [managed by ansible]"] == []
 
 
 def test_normalize_groups_empty_means_default_group():
