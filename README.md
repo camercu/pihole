@@ -420,6 +420,11 @@ Change the allowed subnet via `hardening_lan_subnet` in `roles/hardening/default
   most likely you are mirroring a Pi the committed files were never deployed to.
   Run `just deploy` first. If you really did delete every entry in that file in
   the admin UI, say so: `just mirror force=true`.
+- **`just mirror` refuses with "already have uncommitted changes" (exit 6)** —
+  a hand-edit to a config file this run would also write is not committed
+  yet. Commit or stash it first; merging into a dirty tree would make your
+  edit and the mirror's capture indistinguishable in `git diff`, and could
+  overwrite what you had not yet pushed to the box.
 - **`just deploy` warns that a config file is not there** — a top-level file
   (`adlists.txt`, `allow.list`, `allowlist-urls.txt`) is missing, so this run
   cannot know what it would have listed and removes nothing for that kind.

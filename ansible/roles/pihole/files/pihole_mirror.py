@@ -30,6 +30,7 @@ everything touching the network or filesystem is the thin shell beneath them.
 import argparse
 import json
 import os
+import subprocess
 import sys
 from enum import Enum
 from typing import NamedTuple
@@ -589,6 +590,27 @@ def owned_config_files(root):
     return sorted(found)
 
 
+def working_tree_is_dirty(root, paths):
+    """True if git sees uncommitted changes to any of these paths under root.
+
+    None means "cannot tell" -- root is not inside a git work tree, or git is
+    not on PATH -- and the caller must treat that as "proceed", not as
+    either answer: a mirror run against a plain directory (every unit test,
+    an export pulled somewhere ad hoc) never had this question to answer.
+    """
+    if not paths:
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "-C", root, "status", "--porcelain", "--", *paths],
+            capture_output=True, text=True, timeout=10)
+    except FileNotFoundError:
+        return None
+    if result.returncode != 0:
+        return None
+    return bool(result.stdout.strip())
+
+
 _KINDS_FOR_BASENAME = {
     "allow.list": {Kind.ALLOW_EXACT, Kind.ALLOW_REGEX},
     "adlists.txt": {Kind.ADLIST},
@@ -739,6 +761,7 @@ OK = 0            # nothing left unrecorded
 DRIFT = 3         # settings a mirror run would capture are missing from the files
 UNRECORDABLE = 4  # what is left is only what the config format cannot express
 UNPRUNED = 5      # a file lists entries, and the box holds none of them
+DIRTY = 6         # a file this run would write already has uncommitted edits
 
 
 def report(root, plan, paths, dry_run, refused=(), removed=None):
@@ -869,6 +892,13 @@ def main(argv=None):
     if args.check:
         return report(args.dir, plan, [path for path, _ in pending],
                       dry_run=True, refused=refused, removed=removed)
+    if working_tree_is_dirty(args.dir, owned_config_files(args.dir)):
+        print("ERROR: the config files this run would write already have "
+              "uncommitted changes; commit or stash them first. Merging into "
+              "a dirty tree makes your edit and the mirror's capture "
+              "indistinguishable in git diff, and a mirror run overwrites "
+              "anything not yet on the box.", file=sys.stderr)
+        return DIRTY
     return report(args.dir, plan, write_changes(args.dir, pending),
                   dry_run=False, refused=refused, removed=removed)
 

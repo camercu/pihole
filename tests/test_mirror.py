@@ -9,6 +9,7 @@ current group set exactly. Anything else is reported, never silently reshaped.
 import json
 import os
 import pathlib
+import subprocess
 
 import pihole_mirror as h
 import pytest
@@ -859,6 +860,66 @@ def test_a_declined_merge_says_declined_not_no_changes(tmp_path, capsys):
     _merge(tmp_path, _only_default_group(), cfg)
 
     assert "DECLINED" in capsys.readouterr().out
+
+
+def _git(cwd, *args):
+    subprocess.run(["git", *args], cwd=cwd, check=True,
+                   capture_output=True, text=True)
+
+
+def _init_git_repo(cfg):
+    _git(cfg, "init", "-q")
+    _git(cfg, "config", "user.email", "test@example.com")
+    _git(cfg, "config", "user.name", "test")
+    _git(cfg, "add", "-A")
+    _git(cfg, "commit", "-q", "-m", "initial")
+
+
+def test_working_tree_is_dirty_true_for_an_uncommitted_owned_file(tmp_path):
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "allow.list").write_text("a.example\n", encoding="utf-8")
+    _init_git_repo(cfg)
+    (cfg / "allow.list").write_text("a.example\nb.example\n", encoding="utf-8")
+
+    assert h.working_tree_is_dirty(str(cfg), ["allow.list"]) is True
+
+
+def test_working_tree_is_dirty_false_when_committed(tmp_path):
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "allow.list").write_text("a.example\n", encoding="utf-8")
+    _init_git_repo(cfg)
+
+    assert h.working_tree_is_dirty(str(cfg), ["allow.list"]) is False
+
+
+def test_working_tree_is_dirty_none_outside_a_git_repo(tmp_path):
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "allow.list").write_text("a.example\n", encoding="utf-8")
+
+    assert h.working_tree_is_dirty(str(cfg), ["allow.list"]) is None
+
+
+def test_merge_refuses_a_dirty_working_tree(tmp_path, capsys):
+    # An uncommitted hand-edit to allow.list and a mirror run both touch the
+    # same file; merging into it makes the two indistinguishable in git diff,
+    # and the run would overwrite whatever is not yet on the box.
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "allow.list").write_text("a.example\n", encoding="utf-8")
+    _init_git_repo(cfg)
+    (cfg / "allow.list").write_text("a.example\nb.example\n", encoding="utf-8")
+    state = _only_default_group(
+        domains=[_domain("a.example", "allow", "exact", [0], MANAGED)])
+
+    rc = _merge(tmp_path, state, cfg)
+
+    assert rc == h.DIRTY
+    assert h.clean_lines((cfg / "allow.list").read_text()) == ["a.example",
+                                                                "b.example"]
+    assert "uncommitted" in capsys.readouterr().err
 
 
 def test_nothing_is_pruned_when_live_state_is_empty(tmp_path):
