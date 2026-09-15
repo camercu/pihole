@@ -95,14 +95,19 @@ class Api:
         self.sid = self._login(password)
 
     def _call(self, method, path, body=None, timeout=30):
-        """One API call, waiting out FTL's restart window.
+        """One API call, waiting out FTL's restart window and any transient
+        database-swap answer.
 
         Every call the harness makes comes through here, so this is where the
         rule belongs: a dropped connection means the DNS restart some earlier
-        test asked for has not finished, and the call has not happened yet.
-        Retrying it is not the same as ignoring a failure — an answer of any
-        status is returned immediately, and only a connection that never comes
-        back raises, so a genuinely dead API still fails the test.
+        test asked for has not finished, and a locked/readonly answer means
+        the config database is mid-swap. deploy.is_transient names the second
+        case the same way pihole_deploy.py's own retry does, so a fixture's
+        setup call cannot flake on the exact race the production code is
+        proofed against. Retrying either is not the same as ignoring a
+        failure — an answer of any status is returned once it settles, and
+        only a call that never settles raises, so a genuinely dead API still
+        fails the test.
         """
         url = self.base + path
         if self.sid:
@@ -117,17 +122,22 @@ class Api:
             try:
                 with urllib.request.urlopen(req, timeout=30) as r:
                     raw = r.read()
-                    return r.status, (json.loads(raw) if raw else {})
+                    status, answer = r.status, (json.loads(raw) if raw else {})
             except urllib.error.HTTPError as e:
                 raw = e.read()
                 try:
-                    return e.code, json.loads(raw)
+                    status, answer = e.code, json.loads(raw)
                 except json.JSONDecodeError:
-                    return e.code, raw.decode("utf-8", "replace")
+                    status, answer = e.code, raw.decode("utf-8", "replace")
             except OSError as e:  # URLError, ConnectionReset, RemoteDisconnected
                 if time.time() > deadline:
                     raise AssertionError(f"API never came back: {e}") from e
                 time.sleep(0.25)
+                continue
+            if deploy.is_transient(status, answer) and time.time() <= deadline:
+                time.sleep(0.25)
+                continue
+            return status, answer
 
     def _login(self, password):
         st, j = self._call("POST", "/auth", {"password": password})
