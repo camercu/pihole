@@ -939,6 +939,35 @@ def test_merge_refuses_a_dirty_working_tree(tmp_path, capsys):
     assert "uncommitted" in capsys.readouterr().err
 
 
+def test_merge_ignores_a_dirty_file_outside_this_runs_write_set(tmp_path):
+    # An uncommitted edit to one group's clients.txt must not block a mirror
+    # run that only captures a change in a different, unrelated group. g2's
+    # edit is comment-only, so the box and the file still agree on g2 (no
+    # pending change there) and the test isolates the dirty-scope question
+    # from evidence/refusal, which is covered elsewhere.
+    cfg = tmp_path / "config"
+    (cfg / "groups" / "g1").mkdir(parents=True)
+    (cfg / "groups" / "g1" / "clients.txt").write_text("", encoding="utf-8")
+    (cfg / "groups" / "g2").mkdir(parents=True)
+    (cfg / "groups" / "g2" / "clients.txt").write_text("10.0.0.9\n",
+                                                        encoding="utf-8")
+    _init_git_repo(cfg)
+    (cfg / "groups" / "g2" / "clients.txt").write_text(
+        "10.0.0.9\n# reserved for the router\n", encoding="utf-8")
+    groups = [{"id": 0, "name": "Default", "comment": None},
+             {"id": 2, "name": "g1", "comment": MANAGED},
+             {"id": 3, "name": "g2", "comment": MANAGED}]
+    state = _state(groups=groups,
+                   clients=[_client("10.0.1.1", [0, 2], MANAGED),
+                           _client("10.0.0.9", [0, 3], MANAGED)])
+
+    rc = _merge(tmp_path, state, cfg)
+
+    assert rc == h.OK
+    assert h.clean_lines(
+        (cfg / "groups" / "g1" / "clients.txt").read_text()) == ["10.0.1.1"]
+
+
 def test_nothing_is_pruned_when_live_state_is_empty(tmp_path):
     # An unprovisioned or wiped box answers with nothing at all. Reading that as
     # "the operator deleted everything" would empty the config in one run.

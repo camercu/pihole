@@ -897,7 +897,7 @@ def main(argv=None):
     if args.check:
         return report(args.dir, plan, [path for path, _ in pending],
                       dry_run=True, refused=refused, removed=removed)
-    if working_tree_is_dirty(args.dir, owned_config_files(args.dir)):
+    if working_tree_is_dirty(args.dir, [path for path, _ in pending]):
         print("ERROR: the config files this run would write already have "
               "uncommitted changes; commit or stash them first. Merging into "
               "a dirty tree makes your edit and the mirror's capture "
