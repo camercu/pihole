@@ -763,6 +763,26 @@ def test_a_deletion_survives_when_the_remaining_row_is_protected(tmp_path):
     assert rc == h.OK
 
 
+def test_an_unroutable_row_only_protects_files_its_own_kind_could_reach(tmp_path):
+    # allow.list lists a domain still deployed (kept.example, proving the file
+    # was deployed here) and one deleted in the UI (shared.example). A
+    # disabled deny/exact row happens to share the deleted domain's name; the
+    # two never share a file, so the deny row being protected must not freeze
+    # the unrelated deletion in allow.list.
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "allow.list").write_text("kept.example\nshared.example\n",
+                                    encoding="utf-8")
+    state = _only_default_group(
+        domains=[_domain("kept.example", "allow", "exact", [0], MANAGED),
+                 _domain("shared.example", "deny", "exact", [0], enabled=False)])
+
+    rc = _merge(tmp_path, state, cfg)
+
+    assert h.clean_lines((cfg / "allow.list").read_text()) == ["kept.example"]
+    assert rc == h.UNRECORDABLE
+
+
 def test_force_prune_captures_a_wholesale_deletion(tmp_path):
     # The one case the evidence rule declines wrongly: every entry really was
     # deleted in the UI, so nothing managed is left to prove the box took the

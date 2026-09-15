@@ -119,8 +119,11 @@ class Plan(NamedTuple):
     routed:     (Entry, config paths) per hand-added entry — what adoption needs,
                 and what `files` alone cannot say, since two entries of
                 different kinds can share a name across files
-    protected:  entries the box holds that no file rule places. They exist, so a
-                line carrying one is never pruned wherever it already sits.
+    protected:  (kind, entry) the box holds that no file rule places. They
+                exist, so a line carrying one is never pruned wherever it
+                already sits — but only in a file its own kind could ever
+                reach, or an unroutable deny entry would also protect an
+                unrelated allow entry of the same name. See protected_for.
     """
     files: dict
     group_dirs: list
@@ -299,26 +302,26 @@ def plan_mirror(state):
             # It exists, so whatever the files say about it, nothing may delete
             # the line that carries it on the strength of it being absent.
             if reason:
-                protected.add(e.entry)
+                protected.add((e.kind, e.entry))
             else:
                 for path in paths:
                     files.setdefault(path, set()).add(e.entry)
             continue
         label = f"{e.kind} {e.entry}"
         if not e.enabled:
-            protected.add(e.entry)
+            protected.add((e.kind, e.entry))
             unroutable.append((label, "it is disabled, and the config adds every "
                                       "entry enabled"))
             continue
         if not round_trips(e.entry):
-            protected.add(e.entry)
+            protected.add((e.kind, e.entry))
             unroutable.append((label, "a config file cannot carry it unchanged: "
                                       "'#' starts a comment there and surrounding "
                                       "whitespace is stripped"))
             continue
         paths, reason = _paths_for(e, id_to_name)
         if reason:
-            protected.add(e.entry)
+            protected.add((e.kind, e.entry))
             unroutable.append((label, reason))
             continue
         for path in paths:
@@ -586,6 +589,28 @@ def owned_config_files(root):
     return sorted(found)
 
 
+_KINDS_FOR_BASENAME = {
+    "allow.list": {Kind.ALLOW_EXACT, Kind.ALLOW_REGEX},
+    "adlists.txt": {Kind.ADLIST},
+    "block.list": {Kind.DENY_EXACT, Kind.DENY_REGEX},
+    "clients.txt": {Kind.CLIENT},
+}
+
+
+def protected_for(plan, path):
+    """The protected entries that could ever have sat in this path.
+
+    plan.protected is (kind, entry) pairs; a path can only ever hold the
+    kinds its own basename maps to, top-level or per-group. Without this, an
+    unroutable deny/exact "shared.example.com" would also protect an
+    allow/exact row of the same name from a real deletion in allow.list — the
+    two never share a file, so one row's identity has no business shielding
+    the other's.
+    """
+    kinds = _KINDS_FOR_BASENAME.get(path.rsplit("/", 1)[-1], set())
+    return {entry for kind, entry in plan.protected if kind in kinds}
+
+
 def box_holds_any_of(plan, path, listed):
     """True if the box still holds at least one entry this config file lists.
 
@@ -598,12 +623,12 @@ def box_holds_any_of(plan, path, listed):
     records it is free text an operator can type in the admin UI.
 
     A row can still be held while unroutable — a managed allow entry someone
-    scoped to a group, say — so plan.protected counts as held too; both other
-    callers (refused_prunes, pending_changes) already read it that way, and a
-    file whose only surviving row is protected is not a file nothing was ever
-    deployed from.
+    scoped to a group, say — so protected_for(plan, path) counts as held too;
+    both other callers (refused_prunes, pending_changes) already read it that
+    way, and a file whose only surviving row is protected is not a file
+    nothing was ever deployed from.
     """
-    return bool((set(plan.files.get(path, ())) | plan.protected) & listed)
+    return bool((set(plan.files.get(path, ())) | protected_for(plan, path)) & listed)
 
 
 def removed_counts(root, pending):
@@ -644,7 +669,7 @@ def refused_prunes(root, plan):
             listed = set(clean_lines(f.read()))
         if box_holds_any_of(plan, path, listed):
             continue
-        absent = listed - set(plan.files.get(path, ())) - plan.protected
+        absent = listed - set(plan.files.get(path, ())) - protected_for(plan, path)
         if absent:
             refused.append((path, len(absent)))
     return refused
@@ -670,7 +695,7 @@ def pending_changes(root, plan, force_prune=False):
         # would be inventing a placement the routing declined to choose.
         listed = set(clean_lines(existing))
         wanted = set(plan.files.get(path, ()))
-        wanted |= plan.protected & listed
+        wanted |= protected_for(plan, path) & listed
         merged = merge_lines(existing, sorted(wanted),
                              prune=force_prune
                              or box_holds_any_of(plan, path, listed))
