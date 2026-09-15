@@ -8,6 +8,22 @@ def _write(path, text):
     path.write_text(text, encoding="utf-8")
 
 
+class _FakeResponse:
+    """Stands in for the object urllib.request.urlopen returns."""
+
+    def __init__(self, text):
+        self._body = text.encode()
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
 def test_clean_lines_strips_comments_blanks_and_whitespace():
     text = "a.com\n  b.com  \n# comment\n\nc.com # trailing\n"
     assert deploy.clean_lines(text) == ["a.com", "b.com", "c.com"]
@@ -53,6 +69,29 @@ def test_host_domain_plain_domain():
 def test_host_domain_hosts_format_prefix_stripped():
     assert deploy.host_domain("0.0.0.0 example.com") == "example.com"
     assert deploy.host_domain("127.0.0.1\texample.com") == "example.com"
+
+
+def test_fetch_domains_reports_its_own_success(monkeypatch):
+    monkeypatch.setattr(
+        deploy.urllib.request, "urlopen",
+        lambda url, timeout=30: _FakeResponse("a.example\nb.example\n"))
+
+    domains, ok = deploy.fetch_domains("http://list.example/a.txt")
+
+    assert domains == ["a.example", "b.example"]
+    assert ok is True
+
+
+def test_fetch_domains_reports_failure_without_raising(monkeypatch, capsys):
+    def boom(url, timeout=30):
+        raise deploy.urllib.error.URLError("connection refused")
+    monkeypatch.setattr(deploy.urllib.request, "urlopen", boom)
+
+    domains, ok = deploy.fetch_domains("http://dead.example/a.txt")
+
+    assert domains == []
+    assert ok is False
+    assert "could not fetch" in capsys.readouterr().err
 
 
 def _owned(*gids):
@@ -243,7 +282,6 @@ def test_an_absent_groups_tree_deletes_no_group_deny_entry_or_client(
     monkeypatch.setattr(deploy, "DIR", str(tmp_path))
     monkeypatch.setattr(deploy, "GROUPS_DIR", str(tmp_path / "groups"))
     monkeypatch.setattr(deploy, "PW", "")
-    monkeypatch.setattr(deploy, "fetch_ok", True)
     monkeypatch.setattr(deploy, "changed", dict.fromkeys(deploy.changed, False))
     monkeypatch.setattr(deploy, "collisions", [])
 
@@ -270,6 +308,82 @@ def test_an_absent_groups_tree_deletes_no_group_deny_entry_or_client(
                    if (m == "POST" and p.endswith(":batchDelete"))
                    or (m == "DELETE" and p.startswith("/groups/"))]
     assert destructive == []
+
+
+def _base_state(monkeypatch, tmp_path, allow_list="", allowlist_urls=""):
+    """Wire deploy at tmp_path with empty top-level files and an empty (but
+    present) groups/, then return the config root for the caller to add to."""
+    (tmp_path / "adlists.txt").write_text("", encoding="utf-8")
+    (tmp_path / "allow.list").write_text(allow_list, encoding="utf-8")
+    (tmp_path / "allowlist-urls.txt").write_text(allowlist_urls, encoding="utf-8")
+    (tmp_path / "groups").mkdir()
+    monkeypatch.setattr(deploy, "DIR", str(tmp_path))
+    monkeypatch.setattr(deploy, "GROUPS_DIR", str(tmp_path / "groups"))
+    monkeypatch.setattr(deploy, "PW", "")
+    monkeypatch.setattr(deploy, "changed", dict.fromkeys(deploy.changed, False))
+    monkeypatch.setattr(deploy, "collisions", [])
+    return tmp_path
+
+
+_EMPTY_COLLECTIONS = {
+    "/domains/allow/regex": {"domains": []},
+    "/domains/deny/exact": {"domains": []},
+    "/domains/deny/regex": {"domains": []},
+    "/clients": {"clients": []},
+    "/lists?type=block": {"lists": []},
+}
+
+
+def test_a_local_deletion_reaches_the_box_even_when_a_remote_list_is_down(
+        tmp_path, monkeypatch):
+    # allow.list dropped a domain the box still holds; allowlist-urls.txt names
+    # a URL that is down. The two are unrelated: an unreachable remote list
+    # must not block a deletion that came from the local file.
+    _base_state(monkeypatch, tmp_path, allow_list="kept.example\n",
+                allowlist_urls="http://dead.example/list.txt\n")
+    monkeypatch.setattr(deploy.urllib.request, "urlopen",
+                        lambda url, timeout=30: (_ for _ in ()).throw(
+                            deploy.urllib.error.URLError("refused")))
+
+    calls = _stub_api(monkeypatch, {
+        "/groups": {"groups": [{"id": 0, "name": "Default", "comment": None}]},
+        "/domains/allow/exact": {"domains": [
+            {"domain": "kept.example", "type": "allow", "kind": "exact",
+             "comment": deploy.MANAGED, "groups": [0], "enabled": True},
+            {"domain": "gone.example", "type": "allow", "kind": "exact",
+             "comment": deploy.MANAGED, "groups": [0], "enabled": True}]},
+        **_EMPTY_COLLECTIONS,
+    })
+
+    deploy.main()
+
+    removed = [item["item"] for m, p, b in calls
+              if m == "POST" and p == "/domains:batchDelete"
+              for item in b]
+    assert "gone.example" in removed
+
+
+def test_fetched_allow_entries_are_tagged_distinctly_from_local_ones(
+        tmp_path, monkeypatch):
+    # Fetched and local entries share a collection on the wire; only the
+    # comment tells the mirror (and a human) which file a row came from.
+    _base_state(monkeypatch, tmp_path,
+                allowlist_urls="http://list.example/a.txt\n")
+    monkeypatch.setattr(deploy.urllib.request, "urlopen",
+                        lambda url, timeout=30: _FakeResponse("fetched.example\n"))
+
+    calls = _stub_api(monkeypatch, {
+        "/groups": {"groups": [{"id": 0, "name": "Default", "comment": None}]},
+        "/domains/allow/exact": {"domains": []},
+        **_EMPTY_COLLECTIONS,
+    })
+
+    deploy.main()
+
+    adds = [b for m, p, b in calls if m == "POST" and p == "/domains/allow/exact"]
+    assert any("fetched.example" in b.get("domain", [])
+              and b.get("comment") == deploy.MANAGED_FETCHED
+              for b in adds)
 
 
 def test_a_settled_answer_is_not_retried_at_all():

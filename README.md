@@ -237,12 +237,12 @@ case that misreads is a file whose every entry really was deleted in the admin
 UI; the mirror declines that too (exit 5), and `just mirror force=true` is how
 you say it was deliberate.
 
-> **Known gap.** Domains fetched from `allowlist-urls.txt` are pushed to Pi-hole
-> as ordinary allow entries, so the mirror cannot tell them from ones you added
-> by hand and writes them into `allow.list`. Until that is fixed, check the
-> `allow.list` hunk of a mirror diff before committing it, and drop any block
-> that is just a remote list's contents — committing them forks that list into
-> this repo, and it stops tracking upstream.
+Domains fetched from `allowlist-urls.txt` are pushed to Pi-hole under a comment
+distinct from `allow.list`'s own (`managed by ansible (fetched)`), so the
+mirror leaves them alone entirely rather than forking the remote list into
+`allow.list`. Deleting an entry from `allow.list` also no longer waits on
+every URL in `allowlist-urls.txt` loading first — the two reconcile
+independently.
 
 `git diff` is still the gate — nothing reaches the Pi until you commit and run
 `just deploy`.

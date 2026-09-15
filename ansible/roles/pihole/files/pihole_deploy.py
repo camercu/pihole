@@ -43,6 +43,11 @@ import urllib.request
 from typing import NamedTuple
 
 MANAGED = "managed by ansible"
+# Fetched allowlist-urls.txt domains are indistinguishable from allow.list's
+# own on the wire (same kind, same collection); tagged separately so the
+# mirror can tell a URL's own curated list apart from an operator's edits and
+# leave the former alone rather than forking it into allow.list.
+MANAGED_FETCHED = "managed by ansible (fetched)"
 # A line is a regex pattern (not a plain domain) if it contains any of these.
 _REGEX_CHARS = re.compile(r"[\[\](){}|^$\\*+?]")
 # FTL rejects a duplicate add with this message; we treat it as a soft collision
@@ -292,10 +297,6 @@ GROUPS_DIR = os.path.join(DIR, "groups")  # one subdir per Pi-hole group
 DEFAULT_GROUP = 0  # Pi-hole's built-in "Default" group; never created or removed
 
 changed = {"adlists": False, "domains": False, "groups": False, "clients": False}
-# Set False if any remote allowlist fails to download. When a source is
-# incomplete we must NOT treat its domains as "removed" — a transient network
-# blip would otherwise delete legitimately-managed allow entries.
-fetch_ok = True
 # Entries we couldn't add because something already added them by hand. We skip
 # them (rest of the run still converges) and exit non-zero at the end so the
 # collision is visible instead of silently unmanaged.
@@ -438,16 +439,19 @@ def read_file(name):
 
 
 def fetch_domains(url):
-    """Fetch a remote allowlist; tolerate plain or hosts-format lines."""
-    global fetch_ok
+    """Fetch a remote allowlist; tolerate plain or hosts-format lines.
+
+    Returns (domains, ok) rather than raising or setting shared state: one bad
+    URL among several must not read as every fetched domain being unknown, and
+    must not touch whether allow.list's own, unrelated entries can be removed.
+    """
     try:
         with urllib.request.urlopen(url, timeout=30) as r:
             text = r.read().decode("utf-8", "replace")
     except (urllib.error.URLError, TimeoutError) as e:
         print(f"WARN: could not fetch {url}: {e}", file=sys.stderr)
-        fetch_ok = False
-        return []
-    return [host_domain(line) for line in clean_lines(text)]
+        return [], False
+    return [host_domain(line) for line in clean_lines(text)], True
 
 
 def add_entries(sid, kind, items, extra):
@@ -480,7 +484,7 @@ def add_entries(sid, kind, items, extra):
     return added
 
 
-def reconcile_membership(sid, kind, desired, allow_remove=True):
+def reconcile_membership(sid, kind, desired, allow_remove=True, comment=MANAGED):
     """Reconcile one list kind against {entry: Owned}.
 
     The only reconcile path, so every kind is held to the same comparison.
@@ -488,6 +492,9 @@ def reconcile_membership(sid, kind, desired, allow_remove=True):
     back whenever any part of that state has drifted, and deleted when no longer
     desired. allow_remove=False holds the deletions back when a source failed to
     load, since an incomplete desired set must not read as "these were removed".
+    comment distinguishes rows this call owns from rows another call against the
+    same collection owns (fetched allowlist domains vs. allow.list's own), so
+    two calls sharing a kind never see, update or remove each other's rows.
     """
     assert kind.item_path is not None, f"{kind.label} kind has no PUT item_path"
     st, j = api("GET", kind.path, sid)
@@ -499,14 +506,14 @@ def reconcile_membership(sid, kind, desired, allow_remove=True):
     current = {x[kind.field]: Owned(frozenset(normalize_groups(x.get("groups", []))),
                                     bool(x.get("enabled", True)) if kind.enabled
                                     else True)
-               for x in j.get(kind.collection, []) if x.get("comment") == MANAGED}
+               for x in j.get(kind.collection, []) if x.get("comment") == comment}
     add, update, remove = plan_membership(desired, current)
 
     def body_for(owned):
         # Clients carry no enabled column, so the field is omitted rather than
         # sent as a value FTL has nowhere to put.
         state = {"enabled": owned.enabled} if kind.enabled else {}
-        return {"comment": MANAGED, "groups": sorted(owned.groups), **state}
+        return {"comment": comment, "groups": sorted(owned.groups), **state}
 
     for owned, items in _bucket_by_groups(add):
         added = add_entries(sid, kind, items, body_for(owned))
@@ -531,7 +538,7 @@ def reconcile_membership(sid, kind, desired, allow_remove=True):
         if st not in (200, 204):
             die(f"removing {kind.label} failed (HTTP {st}): {j}")
         changed[kind.bucket] = True
-        print(f"  - {len(remove)} {kind.label}")
+        print(f"  - {len(remove)} {kind.label}: {', '.join(sorted(remove))}")
 
 
 def _bucket_by_groups(add):
@@ -616,17 +623,25 @@ def main():
         name_to_id = reconcile_groups(sid, [name for name, _ in groups],
                                       allow_remove=groups_readable)
 
-        # Allowlists apply network-wide (default group only).
-        allow_exact, allow_regex = split_allow(read_file("allow.list"))
-        for url in read_file("allowlist-urls.txt"):
-            allow_exact += fetch_domains(url)
-        # allow_exact draws on remote lists; only remove exact entries if every
-        # source loaded (fetch_ok). Regex doesn't fetch, so removal is always safe.
-        allow_readable = not {"allow.list", "allowlist-urls.txt"} & set(absent)
-        reconcile_membership(sid, allow_kind("exact"), network_wide(allow_exact),
-                             allow_remove=fetch_ok and allow_readable)
+        # Allowlists apply network-wide (default group only). Local and fetched
+        # entries reconcile separately, under distinct comments: allow.list's
+        # own entries must remove on their own say-so, not on whether a URL
+        # elsewhere in allowlist-urls.txt happened to load this run, and the
+        # two must never be able to mistake one set for the other's rows.
+        local_allow_exact, allow_regex = split_allow(read_file("allow.list"))
+        local_readable = "allow.list" not in absent
+        reconcile_membership(sid, allow_kind("exact"), network_wide(local_allow_exact),
+                             allow_remove=local_readable)
         reconcile_membership(sid, allow_kind("regex"), network_wide(allow_regex),
-                             allow_remove="allow.list" not in absent)
+                             allow_remove=local_readable)
+
+        fetched, fetched_ok = [], "allowlist-urls.txt" not in absent
+        for url in read_file("allowlist-urls.txt"):
+            domains, ok = fetch_domains(url)
+            fetched += domains
+            fetched_ok = fetched_ok and ok
+        reconcile_membership(sid, allow_kind("exact"), network_wide(fetched),
+                             allow_remove=fetched_ok, comment=MANAGED_FETCHED)
 
         # Read each group's files, then assemble the desired group-scoped state (the
         # product decisions live in assemble_desired, unit-tested). Block adlists span

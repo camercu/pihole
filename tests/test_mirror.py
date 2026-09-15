@@ -110,6 +110,32 @@ def test_group_scoped_allow_domain_is_reported_not_narrowed():
     assert "network-wide" in plan.unroutable[0][1]
 
 
+def test_a_fetched_allowlist_domain_is_invisible_to_the_mirror():
+    # allowlist-urls.txt's own curated domains carry a distinct comment so the
+    # mirror can tell them from allow.list's. Routing, protecting or reporting
+    # on them would fork the upstream list into allow.list permanently.
+    state = _state(domains=[_domain("fetched.example", "allow", "exact", [0],
+                                    h.MANAGED_FETCHED)])
+    plan = h.plan_mirror(state)
+    assert plan.files == {}
+    assert plan.unroutable == []
+    assert plan.protected == frozenset()
+
+
+def test_a_fetched_allowlist_domain_is_never_written_into_allow_list(tmp_path):
+    cfg = tmp_path / "config"
+    cfg.mkdir()
+    (cfg / "allow.list").write_text("kept.example\n", encoding="utf-8")
+    state = _only_default_group(
+        domains=[_domain("kept.example", "allow", "exact", [0], MANAGED),
+                 _domain("fetched.example", "allow", "exact", [0],
+                         h.MANAGED_FETCHED)])
+
+    _merge(tmp_path, state, cfg)
+
+    assert h.clean_lines((cfg / "allow.list").read_text()) == ["kept.example"]
+
+
 # ── deny domains: the config expresses these per group only ─────────────────
 def test_group_scoped_deny_domain_goes_to_that_groups_block_list():
     state = _state(domains=[_domain("bad.example", "deny", "exact", [2])])

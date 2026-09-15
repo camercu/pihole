@@ -39,6 +39,7 @@ import pihole_deploy as deploy  # noqa: E402
 from pihole_deploy import (  # noqa: E402
     DEFAULT_GROUP,
     MANAGED,
+    MANAGED_FETCHED,
     clean_lines,
     is_regex,
     normalize_groups,
@@ -250,6 +251,12 @@ def _rows(state):
     for row in state.get("allow_lists", []):
         yield make(Kind.ALLOW_ADLIST, "address", row)
     for row in state.get("domains", []):
+        if row.get("comment") == MANAGED_FETCHED:
+            # allowlist-urls.txt's own curated domains, indistinguishable from
+            # allow.list's on every other field. Not this mirror's to route,
+            # protect or report on -- capturing them would fork the upstream
+            # list into allow.list permanently.
+            continue
         yield make(_domain_kind(row), "domain", row)
     for row in state.get("clients", []):
         yield make(Kind.CLIENT, "client", row)
