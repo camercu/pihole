@@ -383,6 +383,34 @@ def test_a_hand_typed_managed_comment_survives_when_the_manifest_disagrees(
     assert "forged.example" not in removed
 
 
+def test_a_hand_added_group_is_not_silently_taken_over(tmp_path, monkeypatch, capsys):
+    # "teens" was created through the admin UI, not by this role. Writing
+    # managed rows into it, and reporting a clean run, would mean the repo no
+    # longer describes the box it just reconciled.
+    cfg = _base_state(monkeypatch, tmp_path)
+    teens = cfg / "groups" / "teens"
+    teens.mkdir(parents=True)
+    (teens / "block.list").write_text("teenblock.example\n", encoding="utf-8")
+    (teens / "adlists.txt").write_text("", encoding="utf-8")
+    (teens / "clients.txt").write_text("", encoding="utf-8")
+
+    calls = _stub_api(monkeypatch, {
+        "/groups": {"groups": [
+            {"id": 0, "name": "Default", "comment": None},
+            {"id": 7, "name": "teens", "comment": "made in the admin UI"}]},
+        "/domains/allow/exact": {"domains": []},
+        **_EMPTY_COLLECTIONS,
+    })
+
+    with pytest.raises(SystemExit):
+        deploy.main()
+
+    touched_group_7 = [b for m, p, b in calls
+                       if isinstance(b, dict) and 7 in b.get("groups", [])]
+    assert touched_group_7 == []
+    assert "teens" in capsys.readouterr().err
+
+
 def test_the_manifest_records_this_runs_own_desired_identities(tmp_path, monkeypatch):
     _base_state(monkeypatch, tmp_path, allow_list="kept.example\n")
     _stub_api(monkeypatch, {

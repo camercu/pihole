@@ -626,14 +626,27 @@ def reconcile_groups(sid, desired_names, allow_remove=True, known=None, record=N
     known/record carry the manifest the same way reconcile_membership's do: a
     group only deletes when the last successful run's own record agrees the
     MANAGED comment is telling the truth.
-    Returns name -> id for all groups.
+    Returns (name -> id for all groups, the desired names that collided with
+    a hand-added group of the same name -- the caller must not write into
+    those this run).
     """
     st, j = api("GET", "/groups", sid)
     if st != 200:
         die(f"GET groups failed (HTTP {st}): {j}")
-    present = {g["name"] for g in j.get("groups", [])}
-    managed = {g["name"] for g in j.get("groups", [])
-              if g.get("comment") == MANAGED and (known is None or g["name"] in known)}
+    by_name = {g["name"]: g for g in j.get("groups", [])}
+    present = set(by_name)
+    managed = {n for n in by_name
+              if by_name[n].get("comment") == MANAGED
+              and (known is None or n in known)}
+    # A name already present under any other comment is a group someone else
+    # made; add_entries already has this branch for domains/lists/clients, and
+    # a group deserves the same rather than being silently written into.
+    collided = sorted(n for n in dict.fromkeys(desired_names)
+                      if n in present and by_name[n].get("comment") != MANAGED)
+    for name in collided:
+        collisions.append(("group", name))
+        print(f"WARN: group {name!r} already exists as a hand-added group; "
+              "remove it (Pi-hole UI) so it can be managed.", file=sys.stderr)
     add = [n for n in dict.fromkeys(desired_names) if n not in present]
     remove = sorted(n for n in managed if n not in set(desired_names))
 
@@ -660,7 +673,7 @@ def reconcile_groups(sid, desired_names, allow_remove=True, known=None, record=N
     if record is not None:
         record["groups"] = sorted(dict.fromkeys(desired_names))
 
-    return group_ids(sid)
+    return group_ids(sid), set(collided)
 
 
 def main():
@@ -681,10 +694,15 @@ def main():
     sid = login()
     try:
         groups = discover_groups(GROUPS_DIR)
-        name_to_id = reconcile_groups(
+        name_to_id, collided_groups = reconcile_groups(
             sid, [name for name, _ in groups], allow_remove=groups_readable,
             known=known_identities(manifest_in, "groups", MANAGED),
             record=manifest_out)
+        # A collided group's directory is not this run's to write into; its
+        # config stays undeployed (drift) rather than landing in someone
+        # else's group.
+        groups = [(name, path) for name, path in groups
+                 if name not in collided_groups]
 
         # Allowlists apply network-wide (default group only). Local and fetched
         # entries reconcile separately, under distinct comments: allow.list's

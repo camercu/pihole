@@ -198,9 +198,10 @@ what's missing, removes what it previously added but is no longer listed, and
 rebuilds gravity only when adlists actually change. It's declarative and
 idempotent — a no-op run makes no changes. A remote allowlist that fails to
 download is never treated as "removed", so a network blip can't wipe entries. If
-you also add an entry (adlist, domain, or client) **by hand** in the admin UI
-that a config file already manages, it's skipped with a warning and the run exits
-non-zero so you notice — remove the hand-added copy to let the role manage it.
+you also add an entry (adlist, domain, client, or group) **by hand** in the
+admin UI that a config file already manages, it's skipped with a warning and
+the run exits non-zero so you notice — remove the hand-added copy to let the
+role manage it.
 
 "Managed by this role" is not decided by the `managed by ansible` comment
 alone — that box is free text the admin UI lets anyone type, so typing it on
@@ -410,9 +411,10 @@ Change the allowed subnet via `hardening_lan_subnet` in `roles/hardening/default
   populated → run `--tags pihole` (or `pihole -g` on the box); a domain not
   resolving → check unbound (`systemctl status unbound`, `unbound-checkconf`);
   admin HTTPS down → check `pihole-FTL`.
-- **`just deploy` exits non-zero with a collision warning** — a list entry was
-  also added by hand in the admin UI. Remove the hand-added copy so the role can
-  manage it.
+- **`just deploy` exits non-zero with a collision warning** — a list entry, or
+  a group, was also added by hand in the admin UI under a name a config file
+  already uses. Remove the hand-added copy so the role can manage it; that
+  group's own config stays undeployed until you do.
 - **`just mirror` says it left entries alone (exit 5)** — the box holds nothing
   else that file lists, so the entries missing from it were never deleted there;
   most likely you are mirroring a Pi the committed files were never deployed to.
