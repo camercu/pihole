@@ -149,6 +149,22 @@ def discover_groups(groups_dir):
     return out
 
 
+def group_paths_to_prune(source_paths, deployed_paths, source_root, deployed_root):
+    """Deployed group-tree paths this repo's own tree no longer describes.
+
+    Mirrors main.yml's `relpath`/`regex_replace` chain: every source_paths
+    entry maps onto the path it would occupy under deployed_root, and
+    whatever is deployed outside that set is stale. Sorted so a path always
+    precedes any ancestor directory it lives under -- a child's path is
+    always the longer string with its parent as a prefix, so a plain reverse
+    sort clears each directory's contents before `file: state=absent`
+    reaches the directory itself.
+    """
+    kept = {os.path.join(deployed_root, os.path.relpath(p, source_root))
+            for p in source_paths}
+    return sorted((p for p in deployed_paths if p not in kept), reverse=True)
+
+
 def manifest_key(kind_label, comment):
     """Manifest key for one reconcile call.
 
@@ -817,5 +833,21 @@ def main():
         sys.exit(1)
 
 
+# Thin shell around group_paths_to_prune for main.yml's group-prune task: the
+# two file lists come from two separate `find` results (one local, one on the
+# box) that Ansible already has in memory, so this reads them off stdin as
+# JSON rather than re-discovering them, and hands back the prune list the
+# same way.
+def _prune_groups_cli():
+    payload = json.load(sys.stdin)
+    result = group_paths_to_prune(
+        payload["source"], payload["deployed"],
+        payload["source_root"], payload["deployed_root"])
+    json.dump(result, sys.stdout)
+
+
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "prune-groups":
+        _prune_groups_cli()
+    else:
+        main()

@@ -5,6 +5,12 @@ pihole_interface: eth0
 # pi-hole's single upstream is the local unbound instance (ports in group_vars).
 pihole_dns_upstream: "{{ unbound_listen_address }}#{{ unbound_listen_port }}"
 
+# Where this repo's per-group config lives (on the controller) and where it is
+# deployed (on the box). Overridable so the group-prune task can be exercised
+# against throwaway directories in a test, without touching a real Pi-hole.
+pihole_group_source_dir: "{{ role_path }}/files/groups"
+pihole_group_deployed_dir: /etc/pihole/managed/groups
+
 # Blocklists, allowlists, and remote allowlist subscriptions live in plain,
 # commented text files you edit directly — see roles/pihole/files/:
 #   adlists.txt         blocklists (gravity) — one URL per line, # comments ok

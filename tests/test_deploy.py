@@ -716,6 +716,50 @@ def test_discover_groups_ignores_non_directories(tmp_path):
     assert [name for name, _ in deploy.discover_groups(str(tmp_path))] == ["kids"]
 
 
+def test_group_paths_to_prune_keeps_paths_still_in_source():
+    got = deploy.group_paths_to_prune(
+        ["/repo/groups/kids/block.list"],
+        ["/box/groups/kids/block.list"],
+        "/repo/groups", "/box/groups")
+    assert got == []
+
+
+def test_group_paths_to_prune_removes_a_deleted_group():
+    # `find` (file_type: any) lists a group's directory entry alongside its
+    # files on both sides, so a kept group's directory must be in
+    # source_paths too, not just the files inside it.
+    got = deploy.group_paths_to_prune(
+        ["/repo/groups/kids", "/repo/groups/kids/block.list"],
+        ["/box/groups/kids/block.list", "/box/groups/kids",
+         "/box/groups/teens/block.list", "/box/groups/teens"],
+        "/repo/groups", "/box/groups")
+    assert got == ["/box/groups/teens/block.list", "/box/groups/teens"]
+
+
+def test_group_paths_to_prune_orders_files_before_their_directory():
+    # A plain reverse string sort must never hand back a directory before
+    # a path it is a prefix of -- `file: state=absent` fails on a
+    # non-empty directory if the order is wrong.
+    got = deploy.group_paths_to_prune(
+        [], ["/box/groups/kids", "/box/groups/kids/block.list",
+             "/box/groups/kids/clients.txt"],
+        "/repo/groups", "/box/groups")
+    assert got == ["/box/groups/kids/clients.txt",
+                    "/box/groups/kids/block.list", "/box/groups/kids"]
+
+
+def test_group_paths_to_prune_everything_deployed_when_source_is_empty():
+    got = deploy.group_paths_to_prune(
+        [], ["/box/groups/kids/block.list"], "/repo/groups", "/box/groups")
+    assert got == ["/box/groups/kids/block.list"]
+
+
+def test_group_paths_to_prune_nothing_deployed_is_a_no_op():
+    assert deploy.group_paths_to_prune(
+        ["/repo/groups/kids/block.list"], [], "/repo/groups", "/box/groups"
+    ) == []
+
+
 def test_resolve_password_reads_from_file(tmp_path):
     f = tmp_path / "pw"
     _write(f, "s3cret\n")  # trailing newline as Ansible writes it

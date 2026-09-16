@@ -102,19 +102,24 @@
 # copy, the same as it already does everywhere else in this role.
 - name: Ensure this repo's group config tree exists, even empty
   ansible.builtin.file:
-    path: "{{ role_path }}/files/groups"
+    path: "{{ pihole_group_source_dir }}"
     state: directory
     mode: "0755"
   delegate_to: localhost
   become: false
   changed_when: false
+  tags: [pihole_group_prune]
 
 # One subdirectory per Pi-hole group (e.g. groups/kids/); the reconciler
 # discovers them under PIHOLE_DIR and scopes each group's block lists + clients.
+# Not tagged pihole_group_prune: that tag isolates the diff-and-remove logic
+# for testing against an already-deployed (and possibly stale) throwaway
+# tree, which this task's own job -- making the tree match, not diffing it --
+# is no part of.
 - name: Deploy per-group config tree
   ansible.builtin.copy:
-    src: groups/
-    dest: /etc/pihole/managed/groups/
+    src: "{{ pihole_group_source_dir }}/"
+    dest: "{{ pihole_group_deployed_dir }}/"
     owner: root
     group: root
     mode: "0644"
@@ -127,21 +132,23 @@
 # (run site.yml) that could not clear it.
 - name: List the group config this repo describes
   ansible.builtin.find:
-    paths: "{{ role_path }}/files/groups"
+    paths: "{{ pihole_group_source_dir }}"
     recurse: true
     file_type: any
   register: pihole_group_source
   delegate_to: localhost
   become: false
   changed_when: false
+  tags: [pihole_group_prune]
 
 - name: List the group config deployed on the box
   ansible.builtin.find:
-    paths: /etc/pihole/managed/groups
+    paths: "{{ pihole_group_deployed_dir }}"
     recurse: true
     file_type: any
   register: pihole_group_deployed
   changed_when: false
+  tags: [pihole_group_prune]
 
 # A source tree that could not be read is not a source tree describing nothing:
 # treating it as empty would remove every group from the box, which is the same
@@ -152,20 +159,38 @@
       {{ pihole_group_source.skipped_paths | join(', ') }} could not be read, so
       it is unknown which groups this repo describes; refusing to remove any.
   when: pihole_group_source.skipped_paths | default({}) | length > 0
+  tags: [pihole_group_prune]
 
-# Files before directories, longest path first, so a group's contents go before
-# the directory holding them and `file` never meets a non-empty one.
+# The path-diffing itself is a pure function (group_paths_to_prune in
+# pihole_deploy.py), unit-tested there the same way the rest of this module's
+# decision logic is; this task is the thin shell that hands it the two `find`
+# results and gets back what to remove. Runs on the controller (like the
+# `find` above) since pihole_deploy.py isn't deployed to the box until later
+# in this role, and the diff itself touches neither host's filesystem.
+- name: Compute group config no longer described by this repo
+  ansible.builtin.command:
+    cmd: "python3 {{ role_path }}/files/pihole_deploy.py prune-groups"
+  args:
+    stdin: >-
+      {{ {'source': pihole_group_source.files | map(attribute='path') | list,
+          'deployed': pihole_group_deployed.files | map(attribute='path') | list,
+          'source_root': pihole_group_source_dir,
+          'deployed_root': pihole_group_deployed_dir} | to_json }}
+  register: pihole_group_prune
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  tags: [pihole_group_prune]
+
+# Files before directories, longest path first (pihole_group_prune.stdout is
+# already ordered that way) so a group's contents go before the directory
+# holding them and `file` never meets a non-empty one.
 - name: Remove group config the repo no longer describes
   ansible.builtin.file:
     path: "{{ item }}"
     state: absent
-  loop: "{{ pihole_group_deployed.files | map(attribute='path')
-            | reject('in', pihole_group_kept) | sort(reverse=true) | list }}"
-  vars:
-    pihole_group_kept: >-
-      {{ pihole_group_source.files | map(attribute='path')
-         | map('relpath', role_path ~ '/files/groups')
-         | map('regex_replace', '^', '/etc/pihole/managed/groups/') | list }}
+  loop: "{{ pihole_group_prune.stdout | from_json }}"
+  tags: [pihole_group_prune]
 
 # Both scripts keep their module filenames because the mirror imports the
 # reconciler for the ownership contract they share ("managed by ansible", the
