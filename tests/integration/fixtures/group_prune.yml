@@ -1,0 +1,19 @@
+---
+# Exercises the pihole role's group-config prune task (tagged
+# pihole_group_prune in ansible/roles/pihole/tasks/main.yml) against
+# throwaway directories, standing in for role_path/files/groups and
+# /etc/pihole/managed/groups. Lives outside ansible/ deliberately, so
+# it never picks up the real inventory.yml, group_vars, or vault.
+#
+# Run with ANSIBLE_ROLES_PATH set to the repo's ansible/roles, e.g.:
+#   ANSIBLE_ROLES_PATH=<repo>/ansible/roles ansible-playbook \
+#     -i localhost, --tags pihole_group_prune \
+#     -e pihole_group_source_dir=<src> -e pihole_group_deployed_dir=<dst> \
+#     tests/integration/fixtures/group_prune.yml
+- name: Exercise the pihole role's group-prune task in isolation
+  hosts: localhost
+  connection: local
+  become: false
+  gather_facts: false
+  roles:
+    - pihole
