@@ -250,7 +250,12 @@ def _confirmed_managed(kind, entry, comment, manifest):
         return True  # no manifest yet -- trust the comment, deploy's own bootstrap
     deploy_kind = _ITEM_PATH.get(kind)
     if deploy_kind is None:
-        return True  # this kind (allow adlists) carries no manifest signal
+        # This kind (allow adlists) has no manifest key it could ever
+        # occupy -- pihole_deploy.py never manages this collection at all --
+        # so the manifest can never confirm it, and a MANAGED comment here
+        # is definitionally hand-typed. Absence of a signal is not
+        # confirmation; route it like any other unconfirmed comment.
+        return False
     return entry in set(manifest.get(deploy.manifest_key(deploy_kind.label, MANAGED), []))
 
 

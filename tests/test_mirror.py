@@ -540,6 +540,24 @@ def test_allow_type_adlist_is_reported_rather_than_ignored():
         "allow adlist https://a.example/allow.txt"]
 
 
+def test_a_forged_managed_comment_on_an_allow_adlist_is_reported_not_absorbed():
+    # Allow adlists have no manifest key they could ever occupy -- the config
+    # format has no file for them (same as test_allow_type_adlist_is_
+    # reported_rather_than_ignored above) -- so the manifest can never
+    # confirm this kind, and a MANAGED comment on one is definitionally
+    # hand-typed. Must be reported exactly like the comment=None case, not
+    # silently absorbed just because a manifest happens to exist.
+    state = _state()
+    state["manifest"] = {"groups": []}
+    state["allow_lists"] = [{"address": "https://forged.example/allow.txt",
+                             "type": "allow", "groups": [0],
+                             "comment": MANAGED, "enabled": True}]
+    plan = h.plan_mirror(state)
+    assert plan.files == {}
+    assert [item for item, _ in plan.unroutable] == [
+        "allow adlist https://forged.example/allow.txt"]
+
+
 def test_plan_records_the_row_it_decided_against():
     # Adoption happens later, against a second look at live state; without the
     # record the plan was made from there is nothing to re-check.
