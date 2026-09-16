@@ -599,10 +599,14 @@ def reconcile_membership(sid, kind, desired, allow_remove=True, comment=MANAGED,
         changed[kind.bucket] = True
         print(f"  - {len(remove)} {kind.label}: {', '.join(sorted(remove))}")
 
-    if record is not None:
-        # A collided identity was never actually created under this comment;
-        # recording it as ours anyway is what let a later, unrelated comment
-        # edit silently hand the row over.
+    if record is not None and allow_remove:
+        # allow_remove=False means a source this call's desired set depends
+        # on could not be read, so desired itself is incomplete this run --
+        # recording it would shrink the manifest to less than what the last
+        # trustworthy run already established. A collided identity was also
+        # never actually created under this comment; recording it as ours
+        # anyway is what let a later, unrelated comment edit silently hand
+        # the row over.
         record[manifest_key(kind.label, comment)] = sorted(
             set(desired) - collided_this_call)
 
@@ -684,11 +688,11 @@ def reconcile_groups(sid, desired_names, allow_remove=True, known=None, record=N
             changed["groups"] = True
             print(f"  - group {name}")
 
-    if record is not None:
-        # A collided name was never actually created under this role; same
-        # reasoning as reconcile_membership's own collided_this_call.
-        # A collided name was never actually created under this role; same
-        # reasoning as reconcile_membership's own collided_this_call.
+    if record is not None and allow_remove:
+        # Same reasoning as reconcile_membership's own record block: a
+        # collided name was never actually created under this role, and
+        # allow_remove=False means desired_names itself is incomplete this
+        # run (groups/ could not be read).
         record["groups"] = sorted(n for n in dict.fromkeys(desired_names)
                                   if n not in collided)
 
@@ -709,7 +713,11 @@ def main():
               "and group-scoped adlists are left alone rather than removed.",
               file=sys.stderr)
     manifest_in = read_manifest(MANIFEST)
-    manifest_out = {}
+    # Seeded from what's already known, not empty: each incremental write
+    # below must only ever update the keys this run actually reconciled,
+    # never truncate every other kind's last-known-good identities to
+    # nothing just because this run has not (yet, or ever) touched them.
+    manifest_out = dict(manifest_in) if manifest_in is not None else {}
     sid = login()
     try:
         groups = discover_groups(GROUPS_DIR)

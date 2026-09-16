@@ -430,6 +430,66 @@ def test_a_collided_group_is_not_recorded_as_the_managed_identity(monkeypatch):
     assert record["groups"] == []
 
 
+def test_a_source_that_could_not_be_read_does_not_shrink_the_manifest(
+        tmp_path, monkeypatch):
+    # allow.list goes missing for one run -- the documented, "recoverable"
+    # scenario. The box is correctly left alone (allow_remove=False), but a
+    # prior, valid manifest entry for allow/exact must survive this run
+    # untouched, or the next ordinary run misreads the still-managed row as
+    # a hand-added collision.
+    cfg = _base_state(monkeypatch, tmp_path)
+    (cfg / "allow.list").unlink()
+    deploy.write_manifest(str(cfg / ".manifest.json"),
+                          {"allow/exact [managed by ansible]": ["kept.example"]})
+
+    _stub_api(monkeypatch, {
+        "/groups": {"groups": [{"id": 0, "name": "Default", "comment": None}]},
+        "/domains/allow/exact": {"domains": [
+            {"domain": "kept.example", "type": "allow", "kind": "exact",
+             "comment": deploy.MANAGED, "groups": [0], "enabled": True}]},
+        **_EMPTY_COLLECTIONS,
+    })
+
+    deploy.main()
+
+    manifest = deploy.read_manifest(str(cfg / ".manifest.json"))
+    assert manifest["allow/exact [managed by ansible]"] == ["kept.example"]
+
+
+def test_an_unrelated_failure_does_not_truncate_prior_manifest_entries(
+        tmp_path, monkeypatch):
+    # A prior, fully valid manifest already covers "groups" and "allow/exact".
+    # This run dies on an unrelated later kind (clients). Every kind already
+    # reconciled by a real prior run, and not touched this run, must keep its
+    # last-known-good identities -- an interruption may lose progress, but it
+    # must never erase confirmed history.
+    cfg = _base_state(monkeypatch, tmp_path, allow_list="kept.example\n")
+    deploy.write_manifest(str(cfg / ".manifest.json"), {
+        "groups": [],
+        "allow/exact [managed by ansible]": ["kept.example"],
+    })
+
+    def stub(method, path, sid=None, body=None):
+        if method == "GET":
+            if path == "/clients":
+                return 500, {"error": "boom"}
+            return 200, {
+                "/groups": {"groups": [
+                    {"id": 0, "name": "Default", "comment": None}]},
+                "/domains/allow/exact": {"domains": [
+                    {"domain": "kept.example", "type": "allow", "kind": "exact",
+                     "comment": deploy.MANAGED, "groups": [0], "enabled": True}]},
+            }.get(path, {})
+        return 200, {}
+    monkeypatch.setattr(deploy, "api", stub)
+
+    with pytest.raises(SystemExit):
+        deploy.main()
+
+    manifest = deploy.read_manifest(str(cfg / ".manifest.json"))
+    assert manifest["allow/exact [managed by ansible]"] == ["kept.example"]
+
+
 def test_the_manifest_records_this_runs_own_desired_identities(tmp_path, monkeypatch):
     _base_state(monkeypatch, tmp_path, allow_list="kept.example\n")
     _stub_api(monkeypatch, {
