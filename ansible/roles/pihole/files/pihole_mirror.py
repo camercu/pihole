@@ -237,6 +237,23 @@ def _paths_for(e, id_to_name):
     return [f"groups/{n}/clients.txt" for n in named], None
 
 
+def _confirmed_managed(kind, entry, comment, manifest):
+    """True if this row is not just commented MANAGED but the manifest
+    agrees the reconciler itself created it -- the same authority check
+    pihole_deploy.py applies before trusting the comment for a deletion.
+    Without this, a hand-typed MANAGED comment reads as already-owned and is
+    routed silently, the exact forgery the manifest exists to catch.
+    """
+    if comment != MANAGED:
+        return False
+    if manifest is None:
+        return True  # no manifest yet -- trust the comment, deploy's own bootstrap
+    deploy_kind = _ITEM_PATH.get(kind)
+    if deploy_kind is None:
+        return True  # this kind (allow adlists) carries no manifest signal
+    return entry in set(manifest.get(deploy.manifest_key(deploy_kind.label, MANAGED), []))
+
+
 def _rows(state):
     """(Entry, whether the reconciler already owns it) for every live row.
 
@@ -244,11 +261,13 @@ def _rows(state):
     compares is built the same way whether it came from a mirror run or from the
     second look adoption takes.
     """
+    manifest = state.get("manifest")
+
     def make(kind, field, row):
         return (Entry(kind, row[field],
                       tuple(sorted(normalize_groups(row.get("groups", [])))),
                       bool(row.get("enabled", True))),
-                row.get("comment") == MANAGED)
+                _confirmed_managed(kind, row[field], row.get("comment"), manifest))
 
     for row in state.get("lists", []):
         yield make(Kind.ADLIST, "address", row)
@@ -469,18 +488,26 @@ def _fetch(sid):
 
 
 def export_state():
-    """Live FTL state as the four raw API collections.
+    """Live FTL state as the four raw API collections, plus the manifest.
 
     Exporting raw state rather than a finished plan keeps the routing rules on
     the controller, in the repo: changing how an entry is captured is then a
     repo edit, not a redeploy of the box's copy of this script. It also gives
     the drift check the managed entries, which a plan drops.
+
+    The manifest travels in the same export because this runs on the Pi,
+    where it lives, while --check/--merge run wherever --dir points -- often
+    the controller, a different host entirely. Without it, a mirror run has
+    only the comment to decide "already ours," the exact signal a hand-typed
+    comment forges.
     """
     sid = deploy.login()
     try:
-        return _fetch(sid)
+        state = _fetch(sid)
     finally:
         deploy.logout(sid)
+    state["manifest"] = deploy.read_manifest(deploy.MANIFEST)
+    return state
 
 
 def _item_path(e):

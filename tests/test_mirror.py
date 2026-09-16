@@ -62,6 +62,52 @@ def test_a_managed_entry_already_in_its_file_is_not_written_again(tmp_path):
     assert h.pending_changes(str(cfg), plan) == []
 
 
+def test_a_hand_typed_managed_comment_is_treated_as_hand_added_when_the_manifest_disagrees():
+    # The admin UI lets anyone type "managed by ansible" into a comment box.
+    # Without the manifest agreeing, that comment alone must not read as
+    # already-owned -- the exact forgery the manifest exists to catch. It
+    # falls back to the ordinary hand-added path: checked and reported like
+    # any other UI-added row, not routed silently.
+    state = _only_default_group(
+        domains=[_domain("forged.example", "allow", "exact", [0], MANAGED)])
+    state["manifest"] = {"allow/exact [managed by ansible]": []}
+
+    plan = h.plan_mirror(state)
+
+    assert plan.files == {"allow.list": ["forged.example"]}
+    assert any(e.entry == "forged.example" for e, _ in plan.routed)
+
+
+def test_a_managed_comment_the_manifest_confirms_is_still_routed_silently():
+    state = _only_default_group(
+        domains=[_domain("kept.example", "allow", "exact", [0], MANAGED)])
+    state["manifest"] = {"allow/exact [managed by ansible]": ["kept.example"]}
+
+    plan = h.plan_mirror(state)
+
+    assert plan.files == {"allow.list": ["kept.example"]}
+    assert plan.routed == []
+
+
+def test_export_state_embeds_the_manifest(tmp_path, monkeypatch):
+    # --export runs on the Pi, where the manifest lives; --check/--merge run
+    # wherever --dir points, often a different host. The manifest has to
+    # travel in the export, or the mirror has nothing but the comment to
+    # decide "already ours."
+    manifest_path = tmp_path / ".manifest.json"
+    h.deploy.write_manifest(str(manifest_path),
+                            {"allow/exact [managed by ansible]": ["kept.example"]})
+    monkeypatch.setattr(h.deploy, "MANIFEST", str(manifest_path))
+    monkeypatch.setattr(h.deploy, "login", lambda: "sid")
+    monkeypatch.setattr(h.deploy, "logout", lambda sid: None)
+    monkeypatch.setattr(h.deploy, "api",
+                        lambda method, path, sid=None: (200, {}))
+
+    state = h.export_state()
+
+    assert state["manifest"] == {"allow/exact [managed by ansible]": ["kept.example"]}
+
+
 def test_hand_added_default_group_adlist_goes_to_top_level_adlists():
     state = _state(lists=[_adlist("https://a.example/list.txt", [0])])
     assert h.plan_mirror(state).files == {

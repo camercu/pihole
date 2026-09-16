@@ -32,7 +32,7 @@ def test_export_reports_live_state_in_the_shape_the_planner_reads(pihole, ui,
     state, _ = _export(pihole, tmp_path)
 
     assert set(state) == {"groups", "lists", "allow_lists", "domains",
-                          "clients"}
+                          "clients", "manifest"}
     row = next(x for x in state["lists"] if x["address"] == address)
     assert row["comment"] == UI_COMMENT
     assert row["enabled"] is True

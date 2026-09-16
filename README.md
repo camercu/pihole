@@ -207,8 +207,10 @@ role manage it.
 alone — that box is free text the admin UI lets anyone type, so typing it on
 a hand-added row would otherwise hand that row to the next deploy for
 deletion. The role also keeps `.manifest.json` next to the config files on
-the Pi, recording what it itself created last run; a row only deletes when
-the comment and the manifest agree.
+the Pi, recording what it itself created; a row only deletes when the
+comment and the manifest agree. `just mirror` applies the same rule: a
+hand-typed comment the manifest does not confirm is captured and reported
+like any other admin-UI addition, not silently treated as already managed.
 
 Ownership is total: a file listing an entry says which groups it belongs to *and*
 that it is switched on. Toggling a managed row off in the admin UI is undone on
