@@ -333,11 +333,12 @@ GROUPS_DIR = os.path.join(DIR, "groups")  # one subdir per Pi-hole group
 # reconciles sharing a collection (allow.list vs. allowlist-urls.txt's fetched
 # domains) never see each other's identities. The MANAGED comment alone is not
 # proof of authorship -- it is free text the admin UI lets anyone type -- so
-# a row is only ever deleted when both agree it is ours. Written after each
-# reconcile call, not once at the end, so an interruption partway through a
-# run loses at most the calls it never reached -- not this run's own already-
-# confirmed identities, which would otherwise read as hand-added collisions
-# on the next run.
+# a row is only ever deleted when both agree it is ours. Written after every
+# add/remove actually lands, not once per call or once at the end, so an
+# interruption -- between calls or partway through one -- loses at most the
+# mutations it never reached, not this run's own already-confirmed
+# identities, which would otherwise read as hand-added collisions on the
+# next run.
 MANIFEST = os.path.join(DIR, ".manifest.json")
 
 DEFAULT_GROUP = 0  # Pi-hole's built-in "Default" group; never created or removed
@@ -513,7 +514,7 @@ def fetch_domains(url):
     return [host_domain(line) for line in clean_lines(text)], True
 
 
-def add_entries(sid, kind, items, extra):
+def add_entries(sid, kind, items, extra, on_added=None):
     """POST items (as one batch), isolating hand-added collisions per item.
 
     FTL fails the whole batch if any single item already exists, so on a collision
@@ -522,11 +523,20 @@ def add_entries(sid, kind, items, extra):
     non-collision error is still fatal. Returns (count actually added, items that
     collided) -- the caller needs the second half too, since a collided identity
     was never actually created and must not be recorded as this run's own.
+
+    on_added, if given, is called with the items just confirmed live: once
+    with the whole batch on the fast path (one POST, genuinely atomic), or
+    once per item on the fallback path (a separate POST each, so a later
+    item's real failure must not un-confirm an item that already succeeded).
+    Lets a caller persist partial progress before any later item -- or any
+    later step in the same run -- might die.
     """
     if not items:
         return 0, []
     st, j = api("POST", kind.path, sid, {kind.field: items, **extra})
     if st in (200, 201):
+        if on_added:
+            on_added(items)
         return len(items), []
     if not is_collision(st, j):
         die(f"adding {kind.label} failed (HTTP {st}): {j}")
@@ -536,6 +546,8 @@ def add_entries(sid, kind, items, extra):
         st, j = api("POST", kind.path, sid, {kind.field: [it], **extra})
         if st in (200, 201):
             added += 1
+            if on_added:
+                on_added([it])
         elif is_collision(st, j):
             collisions.append((kind.label, it))
             collided.append(it)
@@ -548,7 +560,7 @@ def add_entries(sid, kind, items, extra):
 
 
 def reconcile_membership(sid, kind, desired, allow_remove=True, comment=MANAGED,
-                         known=None, record=None):
+                         known=None, record=None, flush=None):
     """Reconcile one list kind against {entry: Owned}.
 
     The only reconcile path, so every kind is held to the same comparison.
@@ -564,9 +576,13 @@ def reconcile_membership(sid, kind, desired, allow_remove=True, comment=MANAGED,
     "ours": the comment alone is free text the admin UI lets anyone type, so a
     row only counts as this call's to update or delete when both agree. None
     (no manifest yet) trusts the comment alone, same as before the manifest
-    existed. record, when given, is filled with this run's desired identities
-    under this call's key, for the manifest the caller writes once every call
-    has finished.
+    existed. record, when given, is kept up to date with this call's
+    confirmed-live identities under its own key as each add/remove actually
+    lands -- not only once the whole call finishes -- so a later step in this
+    same call dying for real (a genuine server error, not a collision) leaves
+    the manifest matching what is actually live, rather than losing everything
+    this call did. flush, when given, is called after every such update so the
+    manifest is durable on disk before any later step risks the same fate.
     """
     assert kind.item_path is not None, f"{kind.label} kind has no PUT item_path"
     st, j = api("GET", kind.path, sid)
@@ -588,10 +604,26 @@ def reconcile_membership(sid, kind, desired, allow_remove=True, comment=MANAGED,
         state = {"enabled": owned.enabled} if kind.enabled else {}
         return {"comment": comment, "groups": sorted(owned.groups), **state}
 
-    collided_this_call = set()
+    # allow_remove=False means a source this call's desired set depends on
+    # could not be read, so desired itself is incomplete this run --
+    # recording any of it would shrink the manifest to less than what the
+    # last trustworthy run already established; see the same guard on the
+    # remove step below.
+    confirmed = set(current)
+
+    def _sync():
+        if record is not None and allow_remove:
+            record[manifest_key(kind.label, comment)] = sorted(confirmed)
+            if flush is not None:
+                flush()
+
+    def _on_added(added_items):
+        confirmed.update(added_items)
+        _sync()
+
     for owned, items in _bucket_by_groups(add):
-        added, collided = add_entries(sid, kind, items, body_for(owned))
-        collided_this_call.update(collided)
+        added, _collided = add_entries(sid, kind, items, body_for(owned),
+                                       on_added=_on_added)
         if added:
             changed[kind.bucket] = True
             print(f"  + {added} {kind.label} -> groups {sorted(owned.groups)}")
@@ -614,17 +646,9 @@ def reconcile_membership(sid, kind, desired, allow_remove=True, comment=MANAGED,
             die(f"removing {kind.label} failed (HTTP {st}): {j}")
         changed[kind.bucket] = True
         print(f"  - {len(remove)} {kind.label}: {', '.join(sorted(remove))}")
+        confirmed.difference_update(remove)
 
-    if record is not None and allow_remove:
-        # allow_remove=False means a source this call's desired set depends
-        # on could not be read, so desired itself is incomplete this run --
-        # recording it would shrink the manifest to less than what the last
-        # trustworthy run already established. A collided identity was also
-        # never actually created under this comment; recording it as ours
-        # anyway is what let a later, unrelated comment edit silently hand
-        # the row over.
-        record[manifest_key(kind.label, comment)] = sorted(
-            set(desired) - collided_this_call)
+    _sync()
 
 
 def _bucket_by_groups(add):
@@ -649,7 +673,8 @@ def group_ids(sid):
     return {g["name"]: g["id"] for g in j.get("groups", [])}
 
 
-def reconcile_groups(sid, desired_names, allow_remove=True, known=None, record=None):
+def reconcile_groups(sid, desired_names, allow_remove=True, known=None, record=None,
+                     flush=None):
     """Ensure a Pi-hole group exists for each configured group dir.
 
     Creates managed groups that are missing and removes managed groups no longer
@@ -659,7 +684,12 @@ def reconcile_groups(sid, desired_names, allow_remove=True, known=None, record=N
     itself being unreadable must not read as "no groups configured" here either.
     known/record carry the manifest the same way reconcile_membership's do: a
     group only deletes when the last successful run's own record agrees the
-    MANAGED comment is telling the truth.
+    MANAGED comment is telling the truth. record is kept up to date as each
+    group is actually created, not only once every group in this call has
+    landed, so a later group in the same call dying for real (a genuine
+    server error) leaves the manifest matching what is actually live. flush,
+    when given, is called after every such update for the same reason
+    reconcile_membership's does.
     Returns (name -> id for all groups, the desired names that collided with
     a hand-added group of the same name -- the caller must not write into
     those this run).
@@ -684,6 +714,18 @@ def reconcile_groups(sid, desired_names, allow_remove=True, known=None, record=N
     add = [n for n in dict.fromkeys(desired_names) if n not in present]
     remove = sorted(n for n in managed if n not in set(desired_names))
 
+    # Removed names are never in desired_names, so a removal succeeding or
+    # dying part-way through never changes what this call's record should
+    # say -- only `add` landing does.
+    confirmed = set(dict.fromkeys(desired_names)) - set(collided) - set(add)
+
+    def _sync():
+        if record is not None and allow_remove:
+            record["groups"] = sorted(confirmed)
+            if flush is not None:
+                flush()
+
+    _sync()
     for name in add:
         st, j = api("POST", "/groups", sid,
                     {"name": name, "comment": MANAGED, "enabled": True})
@@ -691,6 +733,8 @@ def reconcile_groups(sid, desired_names, allow_remove=True, known=None, record=N
             die(f"adding group {name!r} failed (HTTP {st}): {j}")
         changed["groups"] = True
         print(f"  + group {name}")
+        confirmed.add(name)
+        _sync()
 
     if remove and not allow_remove:
         print(f"  ~ skipping removal of {len(remove)} group(s) "
@@ -703,14 +747,6 @@ def reconcile_groups(sid, desired_names, allow_remove=True, known=None, record=N
                 die(f"removing group {name!r} failed (HTTP {st}): {j}")
             changed["groups"] = True
             print(f"  - group {name}")
-
-    if record is not None and allow_remove:
-        # Same reasoning as reconcile_membership's own record block: a
-        # collided name was never actually created under this role, and
-        # allow_remove=False means desired_names itself is incomplete this
-        # run (groups/ could not be read).
-        record["groups"] = sorted(n for n in dict.fromkeys(desired_names)
-                                  if n not in collided)
 
     return group_ids(sid), set(collided)
 
@@ -729,19 +765,22 @@ def main():
               "and group-scoped adlists are left alone rather than removed.",
               file=sys.stderr)
     manifest_in = read_manifest(MANIFEST)
-    # Seeded from what's already known, not empty: each incremental write
-    # below must only ever update the keys this run actually reconciled,
-    # never truncate every other kind's last-known-good identities to
-    # nothing just because this run has not (yet, or ever) touched them.
+    # Seeded from what's already known, not empty: every write below must
+    # only ever update the keys this run actually reconciled, never truncate
+    # every other kind's last-known-good identities to nothing just because
+    # this run has not (yet, or ever) touched them.
     manifest_out = dict(manifest_in) if manifest_in is not None else {}
+
+    def flush():
+        write_manifest(MANIFEST, manifest_out)
+
     sid = login()
     try:
         groups = discover_groups(GROUPS_DIR)
         name_to_id, collided_groups = reconcile_groups(
             sid, [name for name, _ in groups], allow_remove=groups_readable,
             known=known_identities(manifest_in, "groups", MANAGED),
-            record=manifest_out)
-        write_manifest(MANIFEST, manifest_out)
+            record=manifest_out, flush=flush)
         # A collided group's directory is not this run's to write into; its
         # config stays undeployed (drift) rather than landing in someone
         # else's group.
@@ -757,14 +796,12 @@ def main():
         local_readable = "allow.list" not in absent
         reconcile_membership(
             sid, allow_kind("exact"), network_wide(local_allow_exact),
-            allow_remove=local_readable, record=manifest_out,
+            allow_remove=local_readable, record=manifest_out, flush=flush,
             known=known_identities(manifest_in, "allow/exact", MANAGED))
-        write_manifest(MANIFEST, manifest_out)
         reconcile_membership(
             sid, allow_kind("regex"), network_wide(allow_regex),
-            allow_remove=local_readable, record=manifest_out,
+            allow_remove=local_readable, record=manifest_out, flush=flush,
             known=known_identities(manifest_in, "allow/regex", MANAGED))
-        write_manifest(MANIFEST, manifest_out)
 
         fetched, fetched_ok = [], "allowlist-urls.txt" not in absent
         for url in read_file("allowlist-urls.txt"):
@@ -774,8 +811,8 @@ def main():
         reconcile_membership(
             sid, allow_kind("exact"), network_wide(fetched),
             allow_remove=fetched_ok, comment=MANAGED_FETCHED, record=manifest_out,
+            flush=flush,
             known=known_identities(manifest_in, "allow/exact", MANAGED_FETCHED))
-        write_manifest(MANIFEST, manifest_out)
 
         # Read each group's files, then assemble the desired group-scoped state (the
         # product decisions live in assemble_desired, unit-tested). Block adlists span
@@ -789,25 +826,21 @@ def main():
         ]
         desired = assemble_desired(read_file("adlists.txt"), group_inputs)
         reconcile_membership(
-            sid, ADLIST, desired["adlists"], record=manifest_out,
+            sid, ADLIST, desired["adlists"], record=manifest_out, flush=flush,
             allow_remove="adlists.txt" not in absent and groups_readable,
             known=known_identities(manifest_in, ADLIST.label, MANAGED))
-        write_manifest(MANIFEST, manifest_out)
         reconcile_membership(
             sid, deny_kind("exact"), desired["deny_exact"],
-            allow_remove=groups_readable, record=manifest_out,
+            allow_remove=groups_readable, record=manifest_out, flush=flush,
             known=known_identities(manifest_in, "deny/exact", MANAGED))
-        write_manifest(MANIFEST, manifest_out)
         reconcile_membership(
             sid, deny_kind("regex"), desired["deny_regex"],
-            allow_remove=groups_readable, record=manifest_out,
+            allow_remove=groups_readable, record=manifest_out, flush=flush,
             known=known_identities(manifest_in, "deny/regex", MANAGED))
-        write_manifest(MANIFEST, manifest_out)
         reconcile_membership(
-            sid, CLIENT, desired["clients"], record=manifest_out,
+            sid, CLIENT, desired["clients"], record=manifest_out, flush=flush,
             allow_remove=groups_readable,
             known=known_identities(manifest_in, CLIENT.label, MANAGED))
-        write_manifest(MANIFEST, manifest_out)
 
         # Apply: gravity re-fetches adlists (needed for adlist changes); a plain DNS
         # restart is enough to pick up domain-, group-, and client-list changes.

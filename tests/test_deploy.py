@@ -531,6 +531,66 @@ def test_an_interrupted_run_keeps_the_manifest_entries_it_already_confirmed(
     assert "client [managed by ansible]" not in manifest
 
 
+def test_an_add_survives_a_later_update_dying_in_the_same_call(tmp_path, monkeypatch):
+    # "new.example" (needs adding) and "existing.example" (needs updating,
+    # its enabled bit is stale) are both in the SAME reconcile_membership
+    # call. The add succeeds and is live on Pi-hole; the update for the
+    # unrelated existing.example then dies on a genuine server error. The
+    # manifest must still remember new.example as ours -- it really is,
+    # right now, on the box -- not just the entries confirmed by calls
+    # before this one, the way test_an_interrupted_run_keeps_the_manifest_
+    # entries_it_already_confirmed already pins across calls.
+    _base_state(monkeypatch, tmp_path,
+                allow_list="new.example\nexisting.example\n")
+
+    def stub(method, path, sid=None, body=None):
+        if method == "GET":
+            return 200, {
+                "/groups": {"groups": [
+                    {"id": 0, "name": "Default", "comment": None}]},
+                "/domains/allow/exact": {"domains": [
+                    {"domain": "existing.example", "type": "allow",
+                     "kind": "exact", "comment": deploy.MANAGED,
+                     "groups": [0], "enabled": False}]},
+            }.get(path, {})
+        if method == "PUT" and path == "/domains/allow/exact/existing.example":
+            return 500, {"error": "boom"}
+        return 200, {}
+    monkeypatch.setattr(deploy, "api", stub)
+
+    with pytest.raises(SystemExit):
+        deploy.main()
+
+    manifest = deploy.read_manifest(str(tmp_path / ".manifest.json"))
+    assert "new.example" in manifest["allow/exact [managed by ansible]"]
+
+
+def test_a_group_add_survives_a_later_group_add_dying_in_the_same_call(monkeypatch):
+    # "kids" is created first and lands live on Pi-hole; "teens" then dies on
+    # a genuine server error in the same reconcile_groups call. "kids" must
+    # still be recorded as ours, the same intra-call guarantee
+    # test_an_add_survives_a_later_update_dying_in_the_same_call pins for
+    # reconcile_membership.
+    def stub(method, path, sid=None, body=None):
+        if method == "GET":
+            return 200, {"groups": [
+                {"id": 0, "name": "Default", "comment": None}]}
+        if method == "POST" and path == "/groups":
+            if body["name"] == "teens":
+                return 500, {"error": "boom"}
+            return 200, {}
+        return 200, {}
+    monkeypatch.setattr(deploy, "api", stub)
+    monkeypatch.setattr(deploy, "collisions", [])
+    monkeypatch.setattr(deploy, "changed", dict.fromkeys(deploy.changed, False))
+    record = {}
+
+    with pytest.raises(SystemExit):
+        deploy.reconcile_groups("sid", ["kids", "teens"], record=record)
+
+    assert "kids" in record["groups"]
+
+
 def test_a_local_deletion_reaches_the_box_even_when_a_remote_list_is_down(
         tmp_path, monkeypatch):
     # allow.list dropped a domain the box still holds; allowlist-urls.txt names
