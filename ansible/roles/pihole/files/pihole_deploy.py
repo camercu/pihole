@@ -350,16 +350,28 @@ changed = {"adlists": False, "domains": False, "groups": False, "clients": False
 collisions = []
 
 
-def retry_transient(call, sleep=time.sleep, waits=_DB_RETRY_WAITS):
-    """Repeat `call` while it answers with a transient database condition.
+def retry_transient(call, sleep=None, waits=_DB_RETRY_WAITS):
+    """Repeat `call` while it answers with a transient database condition, or
+    while the connection itself drops.
 
-    Returns the first settled answer — or the last transient one, once the waits
-    run out, so the caller still sees FTL's own words and fails on them. Bounded
-    on purpose: a database that never unlocks is a real fault, and a run that
-    hangs on it is worse than one that stops.
+    FTL also closes its sockets while gravity restarts DNS; that is the same
+    "not yet, ask again" window as a locked database, just signalled by an
+    exception instead of a body. A timeout is not that window -- it means FTL
+    is still there but slow, so it is left to propagate rather than turning one
+    bounded wait into several. Returns the first settled answer — or the last
+    transient one, once the waits run out, so the caller still sees FTL's own
+    words and fails on them. Bounded on purpose: an API that never comes back
+    is a real fault, and a run that hangs on it is worse than one that stops.
     """
+    sleep = sleep if sleep is not None else time.sleep
     for wait in waits:
-        status, body = call()
+        try:
+            status, body = call()
+        except TimeoutError:
+            raise
+        except OSError:
+            sleep(wait)
+            continue
         if not is_transient(status, body):
             return status, body
         sleep(wait)

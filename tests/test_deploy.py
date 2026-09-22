@@ -229,6 +229,59 @@ def test_a_locked_write_is_retried_by_the_call_that_makes_it(monkeypatch):
     assert answers == []
 
 
+def test_a_dropped_connection_is_retried_until_it_reconnects():
+    # FTL closes sockets while gravity restarts DNS -- same "try again" window
+    # as a locked database, just signalled by an exception instead of a body.
+    answers = [ConnectionResetError("reset"), (201, {})]
+
+    def call():
+        item = answers.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    slept = []
+    assert deploy.retry_transient(call, sleep=slept.append) == (201, {})
+    assert len(slept) == 1
+
+
+def test_a_connection_that_never_recovers_raises():
+    # A permanently dead API is a real fault; the run should stop loud on
+    # FTL's own exception, not hang or silently report success.
+    def call():
+        raise deploy.urllib.error.URLError("connection refused")
+
+    with pytest.raises(deploy.urllib.error.URLError):
+        deploy.retry_transient(call, sleep=lambda _: None)
+
+
+def test_a_timeout_is_not_retried():
+    # A timeout means FTL is there but slow, not that its socket dropped.
+    # Retrying it would turn one bounded 30s wait into several.
+    slept = []
+
+    def call():
+        raise TimeoutError("timed out")
+
+    with pytest.raises(TimeoutError):
+        deploy.retry_transient(call, sleep=slept.append)
+    assert slept == []
+
+
+def test_wiring_that_makes_the_call_picks_up_the_real_default_sleep(monkeypatch):
+    # retry_transient's sleep default used to bind time.sleep at def time, so
+    # patching deploy.time.sleep never reached it -- api() callers slept for
+    # real on every retry. Locking in the fix: a monkeypatched module sleep is
+    # what api() actually uses when no sleep is passed explicitly.
+    answers = [_LOCKED, (201, {})]
+    monkeypatch.setattr(deploy, "_request", lambda req: answers.pop(0))
+    slept = []
+    monkeypatch.setattr(deploy.time, "sleep", slept.append)
+
+    assert deploy.api("POST", "/groups", body={}) == (201, {})
+    assert slept == [deploy._DB_RETRY_WAITS[0]]
+
+
 def test_a_missing_config_root_is_not_an_empty_one(tmp_path):
     # Pointing PIHOLE_DIR at a path that is not there deleted every managed
     # entry and reported success, because absent read as empty everywhere.
