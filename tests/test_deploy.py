@@ -1075,6 +1075,46 @@ def test_a_collision_with_a_hand_commented_row_stays_a_collision(monkeypatch):
     assert record["allow/exact [managed by ansible]"] == []
 
 
+def test_a_batch_delete_answering_404_is_already_done(monkeypatch):
+    # FTL answers a batchDelete with 404 when none of its items exist -- the
+    # answer a resend gets after the first delete landed and its ack was
+    # lost. The goal of a delete is absence, so absence is success.
+    def stub(method, path, sid=None, body=None, retry_dropped=None):
+        if method == "GET":
+            return 200, {"domains": [
+                {"domain": "gone.example", "type": "allow", "kind": "exact",
+                 "comment": deploy.MANAGED, "groups": [0], "enabled": True}]}
+        if path == "/domains:batchDelete":
+            return 404, {"took": 0.0001}
+        return 200, {}
+    monkeypatch.setattr(deploy, "api", stub)
+    monkeypatch.setattr(deploy, "changed", dict.fromkeys(deploy.changed, False))
+    record = {}
+
+    deploy.reconcile_membership("sid", deploy.allow_kind("exact"), {},
+                                record=record)
+
+    assert record["allow/exact [managed by ansible]"] == []
+
+
+def test_a_group_delete_answering_404_is_already_done(monkeypatch):
+    def stub(method, path, sid=None, body=None, retry_dropped=None):
+        if method == "GET":
+            return 200, {"groups": [
+                {"id": 0, "name": "Default", "comment": None},
+                {"id": 5, "name": "old", "comment": deploy.MANAGED}]}
+        if method == "DELETE":
+            return 404, {"took": 0.0001}
+        return 200, {}
+    monkeypatch.setattr(deploy, "api", stub)
+    monkeypatch.setattr(deploy, "collisions", [])
+    monkeypatch.setattr(deploy, "changed", dict.fromkeys(deploy.changed, False))
+
+    deploy.reconcile_groups("sid", [])
+
+    assert deploy.changed["groups"] is True
+
+
 def test_normalize_groups_empty_means_default_group():
     # FTL may report a default-only entry as [] or [0]; both mean group 0.
     assert deploy.normalize_groups([]) == {0}

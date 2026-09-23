@@ -4,6 +4,7 @@ Each test gets a clean Pi-hole (managed state wiped) via the ``pihole`` fixture,
 builds a config tree on disk, then runs the *actual* deployed script against the
 live FTL API and asserts the resulting server state.
 """
+import pihole_deploy as deploy
 import pytest
 from conftest import UI_COMMENT
 
@@ -139,6 +140,19 @@ def test_a_managed_allow_domain_switched_off_by_hand_is_switched_back_on(pihole,
     assert r.returncode == 0, r.stderr
     assert "CHANGED" in r.stdout
     assert _row(api.domains(), "domain", domain)["enabled"] is True
+
+
+def test_ftl_answers_a_delete_of_absent_items_with_a_status_the_deploy_accepts(
+        pihole):
+    # A resend after a lost ack deletes what is already gone. The deploy
+    # counts that answer as done; this pins the answer the pinned FTL gives.
+    api = pihole.api
+    st, _ = api._call("POST", "/domains:batchDelete",
+                      [{"item": "never-there.example", "type": "deny",
+                        "kind": "exact"}])
+    assert st in deploy._DELETED
+    st, _ = api._call("DELETE", "/groups/never-there")
+    assert st in deploy._DELETED
 
 
 def test_converge_adds_reassigns_and_removes(pihole, tmp_path):

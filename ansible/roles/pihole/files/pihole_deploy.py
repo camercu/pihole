@@ -61,6 +61,10 @@ _TRANSIENT_DB = ("database is locked", "readonly database")
 # swap (well under a second in practice) without letting a genuinely stuck
 # database hold the playbook for more than about a quarter of a minute.
 _DB_RETRY_WAITS = (0.25, 0.5, 1, 2, 4, 8)
+# Statuses meaning a delete's target is gone. FTL answers 404 when none of the
+# items exist -- which is also what a resend gets after the first delete
+# landed and its ack was lost -- and absence is what a delete is for.
+_DELETED = (200, 204, 404)
 
 
 # ── pure core (unit-tested) ─────────────────────────────────────────────────
@@ -726,7 +730,7 @@ def reconcile_membership(sid, kind, desired, allow_remove=True, comment=MANAGED,
     elif remove:
         st, j = api("POST", kind.del_path, sid,
                     [{"item": r, **kind.del_extra} for r in remove])
-        if st not in (200, 204):
+        if st not in _DELETED:
             die(f"removing {kind.label} failed (HTTP {st}): {j}")
         changed[kind.bucket] = True
         print(f"  - {len(remove)} {kind.label}: {', '.join(sorted(remove))}")
@@ -837,7 +841,7 @@ def reconcile_groups(sid, desired_names, allow_remove=True, known=None, record=N
     else:
         for name in remove:
             st, j = api("DELETE", f"/groups/{urllib.parse.quote(name)}", sid)
-            if st not in (200, 204):
+            if st not in _DELETED:
                 die(f"removing group {name!r} failed (HTTP {st}): {j}")
             changed["groups"] = True
             print(f"  - group {name}")
