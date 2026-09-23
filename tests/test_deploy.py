@@ -268,6 +268,21 @@ def test_a_timeout_is_not_retried():
     assert slept == []
 
 
+def test_a_urlerror_wrapping_a_timeout_is_not_retried():
+    # urllib wraps a connect/send-phase timeout in URLError, not a bare
+    # TimeoutError -- an OSError subtype that, without checking .reason,
+    # falls into the generic dropped-connection branch and gets retried like
+    # a socket reset instead of propagating as the slow-FTL signal it is.
+    slept = []
+
+    def call():
+        raise deploy.urllib.error.URLError(TimeoutError("timed out"))
+
+    with pytest.raises(deploy.urllib.error.URLError):
+        deploy.retry_transient(call, sleep=slept.append)
+    assert slept == []
+
+
 def test_wiring_that_makes_the_call_picks_up_the_real_default_sleep(monkeypatch):
     # retry_transient's sleep default used to bind time.sleep at def time, so
     # patching deploy.time.sleep never reached it -- api() callers slept for

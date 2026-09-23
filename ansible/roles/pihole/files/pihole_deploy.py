@@ -27,7 +27,7 @@ one (warned and skipped, so the rest of the run still converges).
 Structure: the pure functions below (clean_lines, is_regex, split_allow,
 host_domain, plan_membership, build_membership, network_wide, assemble_desired,
 normalize_groups, discover_groups, resolve_password, is_collision, is_transient,
-config_root_missing, missing_inputs, groups_root_missing) hold the decision
+is_timeout, config_root_missing, missing_inputs, groups_root_missing) hold the decision
 logic and are unit-tested;
 everything that touches the network or filesystem is the thin shell beneath them.
 retry_transient sits in that shell and is unit-tested too, by injecting its wait.
@@ -103,6 +103,19 @@ def is_transient(status, body):
         return False
     said = json.dumps(body).lower()
     return any(cond in said for cond in _TRANSIENT_DB)
+
+
+def is_timeout(exc):
+    """True if `exc` (raised by a urlopen call) means FTL is slow, not gone.
+
+    A read timeout raises bare TimeoutError; a connect/send-phase timeout is
+    wrapped by urllib in a URLError instead, so it is caught here by its
+    `.reason` rather than its own type. Either way it is a different signal
+    from a dropped connection: retrying it would turn one bounded wait into
+    several, so callers treat this as fatal rather than as "ask again".
+    """
+    return isinstance(exc, TimeoutError) or isinstance(
+        getattr(exc, "reason", None), TimeoutError)
 
 
 def split_allow(entries):
@@ -367,9 +380,9 @@ def retry_transient(call, sleep=None, waits=_DB_RETRY_WAITS):
     for wait in waits:
         try:
             status, body = call()
-        except TimeoutError:
-            raise
-        except OSError:
+        except OSError as e:
+            if is_timeout(e):
+                raise
             sleep(wait)
             continue
         if not is_transient(status, body):
