@@ -371,10 +371,12 @@ GROUPS_DIR = os.path.join(DIR, "groups")  # one subdir per Pi-hole group
 # identities, which would otherwise read as hand-added collisions on the
 # next run.
 MANIFEST = os.path.join(DIR, ".manifest.json")
-# Manifest key for an apply ("gravity"/"dns") a run's writes needed but did not
-# finish. A later run sees no drift -- the writes are already on the box -- so
-# this record is the only thing that gets them applied.
-_APPLY_PENDING = "apply pending"
+# The apply ("gravity"/"dns") a run's writes needed but did not finish. A later
+# run sees no drift -- the writes are already on the box -- so this record is
+# the only thing that gets them applied. Its own file, not a MANIFEST key: the
+# manifest's mere existence switches off comment-only trust (known_identities),
+# so it must only ever hold identities.
+PENDING = os.path.join(DIR, ".apply-pending")
 
 DEFAULT_GROUP = 0  # Pi-hole's built-in "Default" group; never created or removed
 
@@ -563,6 +565,23 @@ def read_manifest(path):
         return None
     with open(path, encoding="utf-8") as f:
         return json.load(f)
+
+
+def read_pending(path):
+    """The apply an earlier run left unfinished, or None."""
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as f:
+        return f.read().strip() or None
+
+
+def write_pending(path, need):
+    """Record `need` as unfinished, or clear the record when need is None."""
+    if need:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(need + "\n")
+    elif os.path.exists(path):
+        os.remove(path)
 
 
 def write_manifest(path, manifest):
@@ -932,7 +951,7 @@ def main():
     def flush():
         write_manifest(MANIFEST, manifest_out)
 
-    pending = manifest_out.get(_APPLY_PENDING)
+    pending = read_pending(PENDING)
     applied = False
     sid = login()
     try:
@@ -1012,11 +1031,7 @@ def main():
         # box unapplied, and the next run would see no drift to act on.
         need = None if applied else apply_needed(changed, pending)
         if need != pending:
-            if need:
-                manifest_out[_APPLY_PENDING] = need
-            else:
-                manifest_out.pop(_APPLY_PENDING, None)
-            flush()
+            write_pending(PENDING, need)
         logout(sid)
 
     # Everything appliable has been applied; fail loudly so a hand-added collision

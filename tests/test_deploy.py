@@ -506,8 +506,7 @@ def test_a_dropped_gravity_trigger_is_applied_by_the_next_run(tmp_path, monkeypa
     deploy.main()
 
     assert len(gravity_posts) == 2
-    manifest = deploy.read_manifest(str(cfg / ".manifest.json"))
-    assert deploy._APPLY_PENDING not in manifest
+    assert deploy.read_pending(deploy.PENDING) is None
 
 
 def test_a_run_that_dies_after_a_write_leaves_the_apply_pending(tmp_path,
@@ -529,8 +528,31 @@ def test_a_run_that_dies_after_a_write_leaves_the_apply_pending(tmp_path,
     with pytest.raises(SystemExit):
         deploy.main()
 
+    assert deploy.read_pending(deploy.PENDING) == "dns"
+
+
+def test_the_identity_manifest_never_holds_the_pending_apply(tmp_path,
+                                                             monkeypatch):
+    # known_identities trusts the comment alone only while no manifest exists.
+    # A pending-apply record written into it would make a first-run manifest
+    # "exist" with no identities -- every managed row would stop being ours,
+    # and the mirror would misread them all. Identity lists only.
+    _base_state(monkeypatch, tmp_path, allow_list="kept.example\n")
+
+    def stub(method, path, sid=None, body=None, retry_dropped=None):
+        if method == "GET":
+            if path == "/clients":
+                return 500, {"error": "boom"}
+            return 200, {"/groups": {"groups": [
+                {"id": 0, "name": "Default", "comment": None}]}}.get(path, {})
+        return 200, {}
+    monkeypatch.setattr(deploy, "api", stub)
+
+    with pytest.raises(SystemExit):
+        deploy.main()
+
     manifest = deploy.read_manifest(str(tmp_path / ".manifest.json"))
-    assert manifest[deploy._APPLY_PENDING] == "dns"
+    assert all(isinstance(v, list) for v in manifest.values())
 
 
 def test_a_missing_config_root_is_not_an_empty_one(tmp_path):
@@ -586,6 +608,7 @@ def test_an_absent_groups_tree_deletes_no_group_deny_entry_or_client(
     monkeypatch.setattr(deploy, "DIR", str(tmp_path))
     monkeypatch.setattr(deploy, "GROUPS_DIR", str(tmp_path / "groups"))
     monkeypatch.setattr(deploy, "MANIFEST", str(tmp_path / ".manifest.json"))
+    monkeypatch.setattr(deploy, "PENDING", str(tmp_path / ".apply-pending"))
     monkeypatch.setattr(deploy, "PW", "")
     monkeypatch.setattr(deploy, "changed", dict.fromkeys(deploy.changed, False))
     monkeypatch.setattr(deploy, "collisions", [])
@@ -625,6 +648,7 @@ def _base_state(monkeypatch, tmp_path, allow_list="", allowlist_urls=""):
     monkeypatch.setattr(deploy, "DIR", str(tmp_path))
     monkeypatch.setattr(deploy, "GROUPS_DIR", str(tmp_path / "groups"))
     monkeypatch.setattr(deploy, "MANIFEST", str(tmp_path / ".manifest.json"))
+    monkeypatch.setattr(deploy, "PENDING", str(tmp_path / ".apply-pending"))
     monkeypatch.setattr(deploy, "PW", "")
     monkeypatch.setattr(deploy, "changed", dict.fromkeys(deploy.changed, False))
     monkeypatch.setattr(deploy, "collisions", [])
