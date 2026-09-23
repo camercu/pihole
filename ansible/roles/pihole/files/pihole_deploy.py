@@ -397,16 +397,24 @@ def retry_transient(call, sleep=None, waits=_DB_RETRY_WAITS, retry_dropped=True)
     return call()
 
 
-def api(method, path, sid=None, body=None, retry_dropped=True):
+def api(method, path, sid=None, body=None, retry_dropped=None):
     """Call the FTL API. Returns (status_code, decoded_json_or_text).
 
     Every call the script makes comes through here, so this is where waiting out
     a database swap belongs: a locked or read-only answer means the call has not
     happened yet, and the alternative — dying on it — aborts a whole deploy for
-    a window that closes on its own. retry_dropped=False is for a call whose
-    blind retry is worse than the drop itself: a lost ack can mean the call
-    already acted, and acting twice does harm.
+    a window that closes on its own.
+
+    A dropped connection is resent too, and for a write a lost ack can mean the
+    first attempt already acted. So every write must say retry_dropped=True
+    (a resend is safe: idempotent, or its duplicate answer is handled) or
+    False (acting twice does harm). A GET is always safe to resend.
     """
+    if retry_dropped is None:
+        if method != "GET":
+            raise TypeError(f"{method} {path}: declare retry_dropped -- is "
+                            "resending this write after a lost ack safe?")
+        retry_dropped = True
     url = API + path
     if sid:
         url += ("&" if "?" in url else "?") + "sid=" + urllib.parse.quote(sid)
@@ -464,7 +472,7 @@ def login():
     if not PW:
         return None  # no password set => API accepts unauthenticated calls
     try:
-        st, j = api("POST", "/auth", body={"password": PW})
+        st, j = api("POST", "/auth", body={"password": PW}, retry_dropped=True)
     except OSError as e:
         if is_timeout(e):
             die(f"authentication failed: FTL did not respond in time ({e})")
@@ -481,7 +489,7 @@ def logout(sid):
     never logs out can exhaust them (overlapping timers, rapid re-runs).
     """
     if sid:
-        api("DELETE", "/auth", sid)
+        api("DELETE", "/auth", sid, retry_dropped=True)  # answer is ignored
 
 
 _TOP_LEVEL_FILES = ("adlists.txt", "allow.list", "allowlist-urls.txt")
@@ -613,7 +621,9 @@ def add_entries(sid, kind, items, extra, on_added=None):
     """
     if not items:
         return 0, []
-    st, j = api("POST", kind.path, sid, {kind.field: items, **extra})
+    # A resend's duplicate answer is a collision, corroborated below.
+    st, j = api("POST", kind.path, sid, {kind.field: items, **extra},
+                retry_dropped=True)
     if st in (200, 201):
         if on_added:
             on_added(items)
@@ -624,7 +634,8 @@ def add_entries(sid, kind, items, extra, on_added=None):
     collided = []
     live = None  # fetched at most once, only if a collision actually occurs
     for it in items:
-        st, j = api("POST", kind.path, sid, {kind.field: [it], **extra})
+        st, j = api("POST", kind.path, sid, {kind.field: [it], **extra},
+                    retry_dropped=True)
         if st in (200, 201):
             added += 1
             if on_added:
@@ -717,7 +728,8 @@ def reconcile_membership(sid, kind, desired, allow_remove=True, comment=MANAGED,
             print(f"  + {added} {kind.label} -> groups {sorted(owned.groups)}")
 
     for entry, owned in update.items():
-        st, j = api("PUT", kind.item_path(entry), sid, body_for(owned))
+        st, j = api("PUT", kind.item_path(entry), sid, body_for(owned),
+                    retry_dropped=True)  # PUT is idempotent
         if st not in (200, 201, 204):
             die(f"reasserting {kind.label} {entry!r} failed (HTTP {st}): {j}")
         changed[kind.bucket] = True
@@ -729,7 +741,8 @@ def reconcile_membership(sid, kind, desired, allow_remove=True, comment=MANAGED,
               file=sys.stderr)
     elif remove:
         st, j = api("POST", kind.del_path, sid,
-                    [{"item": r, **kind.del_extra} for r in remove])
+                    [{"item": r, **kind.del_extra} for r in remove],
+                    retry_dropped=True)  # a resend's 404 is in _DELETED
         if st not in _DELETED:
             die(f"removing {kind.label} failed (HTTP {st}): {j}")
         changed[kind.bucket] = True
@@ -815,8 +828,10 @@ def reconcile_groups(sid, desired_names, allow_remove=True, known=None, record=N
 
     _sync()
     for name in add:
+        # A resend's duplicate answer is a collision, corroborated below.
         st, j = api("POST", "/groups", sid,
-                    {"name": name, "comment": MANAGED, "enabled": True})
+                    {"name": name, "comment": MANAGED, "enabled": True},
+                    retry_dropped=True)
         if st not in (200, 201):
             # Same self-retry race add_entries corroborates: the create may
             # have landed with its ack lost, and the retried POST now bounces
@@ -840,7 +855,8 @@ def reconcile_groups(sid, desired_names, allow_remove=True, known=None, record=N
               file=sys.stderr)
     else:
         for name in remove:
-            st, j = api("DELETE", f"/groups/{urllib.parse.quote(name)}", sid)
+            st, j = api("DELETE", f"/groups/{urllib.parse.quote(name)}", sid,
+                        retry_dropped=True)  # a resend's 404 is in _DELETED
             if st not in _DELETED:
                 die(f"removing group {name!r} failed (HTTP {st}): {j}")
             changed["groups"] = True
@@ -873,7 +889,7 @@ def apply_changes(sid):
             die(f"gravity rebuild failed (HTTP {st})")
     elif any(changed.values()):
         print("Reloading DNS...")
-        api("POST", "/action/restartdns", sid)
+        api("POST", "/action/restartdns", sid, retry_dropped=True)  # 2 restarts = 1
 
 
 def main():

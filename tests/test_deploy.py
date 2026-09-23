@@ -225,7 +225,7 @@ def test_a_locked_write_is_retried_by_the_call_that_makes_it(monkeypatch):
     monkeypatch.setattr(deploy, "_request", lambda req: answers.pop(0))
     monkeypatch.setattr(deploy.time, "sleep", lambda _: None)
 
-    assert deploy.api("POST", "/groups", body={}) == (201, {})
+    assert deploy.api("POST", "/groups", body={}, retry_dropped=True) == (201, {})
     assert answers == []
 
 
@@ -293,7 +293,7 @@ def test_wiring_that_makes_the_call_picks_up_the_real_default_sleep(monkeypatch)
     slept = []
     monkeypatch.setattr(deploy.time, "sleep", slept.append)
 
-    assert deploy.api("POST", "/groups", body={}) == (201, {})
+    assert deploy.api("POST", "/groups", body={}, retry_dropped=True) == (201, {})
     assert slept == [deploy._DB_RETRY_WAITS[0]]
 
 
@@ -410,6 +410,40 @@ def test_gravity_retry_dropped_false_is_wired_into_the_action_call(monkeypatch):
     assert seen["retry_dropped"] is False
 
 
+def test_every_write_through_api_declares_whether_a_resend_is_safe():
+    # api() resends a call whose connection dropped. For a write, that resend
+    # is safe only when the endpoint tolerates it (idempotent, or its
+    # collision/404 answer is handled) -- a property of each call site that
+    # a default would decide silently. Static, so an unexercised path is
+    # checked too; api() enforces the same rule at run time.
+    import ast
+    from pathlib import Path
+    files = Path(deploy.__file__).parent
+    undeclared = []
+    for name in ("pihole_deploy.py", "pihole_mirror.py"):
+        tree = ast.parse((files / name).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            f = node.func
+            is_api = (isinstance(f, ast.Name) and f.id == "api") or (
+                isinstance(f, ast.Attribute) and f.attr == "api"
+                and isinstance(f.value, ast.Name) and f.value.id == "deploy")
+            if not is_api:
+                continue
+            method = node.args[0] if node.args else None
+            if isinstance(method, ast.Constant) and method.value == "GET":
+                continue
+            if not any(k.arg == "retry_dropped" for k in node.keywords):
+                undeclared.append(f"{name}:{node.lineno}")
+    assert undeclared == []
+
+
+def test_api_refuses_a_write_that_does_not_declare_resend_safety():
+    with pytest.raises(TypeError):
+        deploy.api("POST", "/groups", body={})
+
+
 def test_a_missing_config_root_is_not_an_empty_one(tmp_path):
     # Pointing PIHOLE_DIR at a path that is not there deleted every managed
     # entry and reported success, because absent read as empty everywhere.
@@ -445,7 +479,7 @@ def _stub_api(monkeypatch, get_responses):
     and records every call, so a test can assert what main() tried to do."""
     calls = []
 
-    def stub(method, path, sid=None, body=None):
+    def stub(method, path, sid=None, body=None, retry_dropped=None):
         calls.append((method, path, body))
         return 200, get_responses.get(path, {}) if method == "GET" else {}
 
@@ -596,7 +630,7 @@ def test_a_collided_group_is_not_recorded_as_the_managed_identity(monkeypatch):
     # "teens" already exists as a hand-added group; reconcile_groups skips it
     # (a collision). The manifest must not remember it as ours either, for
     # the same reason a collided domain must not be.
-    def stub(method, path, sid=None, body=None):
+    def stub(method, path, sid=None, body=None, retry_dropped=None):
         if method == "GET":
             return 200, {"groups": [
                 {"id": 0, "name": "Default", "comment": None},
@@ -650,7 +684,7 @@ def test_an_unrelated_failure_does_not_truncate_prior_manifest_entries(
         "allow/exact [managed by ansible]": ["kept.example"],
     })
 
-    def stub(method, path, sid=None, body=None):
+    def stub(method, path, sid=None, body=None, retry_dropped=None):
         if method == "GET":
             if path == "/clients":
                 return 500, {"error": "boom"}
@@ -693,7 +727,7 @@ def test_an_interrupted_run_keeps_the_manifest_entries_it_already_confirmed(
     # just-created row as a hand-added collision.
     _base_state(monkeypatch, tmp_path, allow_list="kept.example\n")
 
-    def stub(method, path, sid=None, body=None):
+    def stub(method, path, sid=None, body=None, retry_dropped=None):
         if method == "GET":
             if path == "/clients":
                 return 500, {"error": "boom"}
@@ -724,7 +758,7 @@ def test_an_add_survives_a_later_update_dying_in_the_same_call(tmp_path, monkeyp
     _base_state(monkeypatch, tmp_path,
                 allow_list="new.example\nexisting.example\n")
 
-    def stub(method, path, sid=None, body=None):
+    def stub(method, path, sid=None, body=None, retry_dropped=None):
         if method == "GET":
             return 200, {
                 "/groups": {"groups": [
@@ -752,7 +786,7 @@ def test_a_group_add_survives_a_later_group_add_dying_in_the_same_call(monkeypat
     # still be recorded as ours, the same intra-call guarantee
     # test_an_add_survives_a_later_update_dying_in_the_same_call pins for
     # reconcile_membership.
-    def stub(method, path, sid=None, body=None):
+    def stub(method, path, sid=None, body=None, retry_dropped=None):
         if method == "GET":
             return 200, {"groups": [
                 {"id": 0, "name": "Default", "comment": None}]}
@@ -899,7 +933,7 @@ def test_a_collided_add_is_not_recorded_as_the_managed_identity(monkeypatch):
     # created.
     monkeypatch.setattr(deploy, "collisions", [])
 
-    def stub(method, path, sid=None, body=None):
+    def stub(method, path, sid=None, body=None, retry_dropped=None):
         if method == "GET":
             return 200, {"domains": []}
         if method == "POST":
@@ -927,7 +961,7 @@ def test_a_self_retried_add_is_recognized_as_already_ours(monkeypatch):
     monkeypatch.setattr(deploy, "collisions", [])
     gets = {"n": 0}
 
-    def stub(method, path, sid=None, body=None):
+    def stub(method, path, sid=None, body=None, retry_dropped=None):
         if method == "GET":
             gets["n"] += 1
             if gets["n"] == 1:
@@ -957,7 +991,7 @@ def test_reconcile_groups_self_retried_create_is_not_fatal(monkeypatch):
     # on a create that, from the box's point of view, already succeeded.
     gets = {"n": 0}
 
-    def stub(method, path, sid=None, body=None):
+    def stub(method, path, sid=None, body=None, retry_dropped=None):
         if method == "GET":
             gets["n"] += 1
             if gets["n"] == 1:
@@ -992,7 +1026,7 @@ def test_a_self_retried_add_is_recognized_even_when_a_manifest_already_lists_oth
     monkeypatch.setattr(deploy, "collisions", [])
     gets = {"n": 0}
 
-    def stub(method, path, sid=None, body=None):
+    def stub(method, path, sid=None, body=None, retry_dropped=None):
         if method == "GET":
             gets["n"] += 1
             if gets["n"] == 1:
@@ -1020,7 +1054,7 @@ def test_reconcile_groups_self_retried_create_is_recognized_even_when_a_manifest
     # Same bug as the add_entries case above, for group create.
     gets = {"n": 0}
 
-    def stub(method, path, sid=None, body=None):
+    def stub(method, path, sid=None, body=None, retry_dropped=None):
         if method == "GET":
             gets["n"] += 1
             if gets["n"] == 1:
@@ -1053,7 +1087,7 @@ def test_a_collision_with_a_hand_commented_row_stays_a_collision(monkeypatch):
     monkeypatch.setattr(deploy, "collisions", [])
     gets = {"n": 0}
 
-    def stub(method, path, sid=None, body=None):
+    def stub(method, path, sid=None, body=None, retry_dropped=None):
         if method == "GET":
             gets["n"] += 1
             if gets["n"] == 1:

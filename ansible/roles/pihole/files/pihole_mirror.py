@@ -539,7 +539,8 @@ def adopt_entries(planned):
             body = {"comment": MANAGED, "groups": list(e.groups)}
             if e.kind is not Kind.CLIENT:  # clients carry no enabled column
                 body["enabled"] = e.enabled
-            st, resp = deploy.api("PUT", _item_path(e), sid, body)
+            st, resp = deploy.api("PUT", _item_path(e), sid, body,
+                                  retry_dropped=True)  # PUT is idempotent
             if st not in (200, 201, 204):
                 deploy.die(f"adopting {e.kind} {e.entry!r} failed (HTTP {st}): {resp}")
             adopted.append(e)
