@@ -297,6 +297,62 @@ def test_wiring_that_makes_the_call_picks_up_the_real_default_sleep(monkeypatch)
     assert slept == [deploy._DB_RETRY_WAITS[0]]
 
 
+def test_login_retries_a_dropped_connection_before_succeeding(monkeypatch):
+    # Login lands exactly in the window this run's own earlier reconcile may
+    # have just opened (a DNS restart) -- an integration run against a real
+    # container hit this directly once login stopped retrying, failing a
+    # perfectly good run. Retry it like any other call.
+    monkeypatch.setattr(deploy, "PW", "secret")
+    monkeypatch.setattr(deploy.time, "sleep", lambda _: None)
+    answers = [ConnectionResetError("reset"), (200, {"session": {"sid": "abc"}})]
+
+    def fake_request(req):
+        item = answers.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(deploy, "_request", fake_request)
+
+    assert deploy.login() == "abc"
+
+
+def test_login_dies_cleanly_when_the_connection_never_recovers(monkeypatch):
+    # Retries are bounded; if FTL is genuinely gone, login must stop the run
+    # with a clear message (die()), not a raw traceback from the last,
+    # unguarded attempt.
+    monkeypatch.setattr(deploy, "PW", "secret")
+    monkeypatch.setattr(deploy.time, "sleep", lambda _: None)
+
+    def fake_request(req):
+        raise ConnectionResetError("reset")
+
+    monkeypatch.setattr(deploy, "_request", fake_request)
+
+    with pytest.raises(SystemExit):
+        deploy.login()
+
+
+def test_login_reports_a_timeout_as_a_timeout_not_a_dropped_connection(
+        monkeypatch, capsys):
+    # TimeoutError is an OSError subclass, so a bare `except OSError` also
+    # catches it -- mislabeling a slow-but-alive FTL as a dropped socket and
+    # pointing an operator at the wrong cause.
+    monkeypatch.setattr(deploy, "PW", "secret")
+    monkeypatch.setattr(deploy.time, "sleep", lambda _: None)
+
+    def fake_request(req):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(deploy, "_request", fake_request)
+
+    with pytest.raises(SystemExit):
+        deploy.login()
+    err = capsys.readouterr().err
+    assert "timed out" in err.lower()
+    assert "dropped" not in err.lower()
+
+
 def test_a_dropped_connection_is_not_retried_when_the_caller_opts_out():
     slept = []
 

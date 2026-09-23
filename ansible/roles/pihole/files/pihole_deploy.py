@@ -448,10 +448,23 @@ def login():
     stop the run loudly rather than silently reconcile against nothing. Kept
     deliberately separate from backup/smoke's login(), which have their own
     error contracts (raise / soft-None) suited to their jobs.
+
+    A dropped connection here is retried like any other call: login lands in
+    the window an earlier run's DNS restart may still hold open, so a fatal
+    drop would fail the ordinary case to guard the rare one. The rare one: a
+    retry after a lost ack (not a lost request) mints a second session, whose
+    seat leaks until FTL's idle timeout reclaims it -- a real but minor cost.
+    If the connection never comes back, the run still stops with a message,
+    not a raw traceback.
     """
     if not PW:
         return None  # no password set => API accepts unauthenticated calls
-    st, j = api("POST", "/auth", body={"password": PW})
+    try:
+        st, j = api("POST", "/auth", body={"password": PW})
+    except OSError as e:
+        if is_timeout(e):
+            die(f"authentication failed: FTL did not respond in time ({e})")
+        die(f"authentication failed: connection dropped before a response ({e})")
     if st != 200:
         die(f"authentication failed (HTTP {st}): {j}")
     return j["session"]["sid"]
