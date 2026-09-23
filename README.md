@@ -196,7 +196,10 @@ Edit, re-run the playbook (or `./setup.sh`), done. The pihole role reconciles
 lists into Pi-hole through its **REST API** (`pihole_deploy.py`): it adds
 what's missing, removes what it previously added but is no longer listed, and
 rebuilds gravity only when adlists actually change. It's declarative and
-idempotent — a no-op run makes no changes. A remote allowlist that fails to
+idempotent — a no-op run makes no changes. If a run stops after writing
+changes but before Pi-hole applies them (say, the connection drops during the
+gravity rebuild), the next run applies them, even though it finds nothing
+else to change. A remote allowlist that fails to
 download is never treated as "removed", so a network blip can't wipe entries. If
 you also add an entry (adlist, domain, client, or group) **by hand** in the
 admin UI that a config file already manages, it's skipped with a warning and

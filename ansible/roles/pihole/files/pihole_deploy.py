@@ -27,7 +27,7 @@ one (warned and skipped, so the rest of the run still converges).
 Structure: the pure functions below (clean_lines, is_regex, split_allow,
 host_domain, plan_membership, build_membership, network_wide, assemble_desired,
 normalize_groups, discover_groups, resolve_password, is_collision, is_transient,
-is_timeout, config_root_missing, missing_inputs, groups_root_missing) hold the decision
+is_timeout, apply_needed, config_root_missing, missing_inputs, groups_root_missing) hold the decision
 logic and are unit-tested;
 everything that touches the network or filesystem is the thin shell beneath them.
 retry_transient sits in that shell and is unit-tested too, by injecting its wait.
@@ -120,6 +120,20 @@ def is_timeout(exc):
     """
     return isinstance(exc, TimeoutError) or isinstance(
         getattr(exc, "reason", None), TimeoutError)
+
+
+def apply_needed(changed, pending):
+    """What FTL must do for reconciled writes to take effect: "gravity",
+    "dns" or None.
+
+    `pending` is what an earlier run wrote to the box but never got applied.
+    Gravity re-fetches adlists and reloads DNS too, so it covers "dns".
+    """
+    if changed["adlists"] or pending == "gravity":
+        return "gravity"
+    if any(changed.values()) or pending == "dns":
+        return "dns"
+    return None
 
 
 def split_allow(entries):
@@ -357,6 +371,10 @@ GROUPS_DIR = os.path.join(DIR, "groups")  # one subdir per Pi-hole group
 # identities, which would otherwise read as hand-added collisions on the
 # next run.
 MANIFEST = os.path.join(DIR, ".manifest.json")
+# Manifest key for an apply ("gravity"/"dns") a run's writes needed but did not
+# finish. A later run sees no drift -- the writes are already on the box -- so
+# this record is the only thing that gets them applied.
+_APPLY_PENDING = "apply pending"
 
 DEFAULT_GROUP = 0  # Pi-hole's built-in "Default" group; never created or removed
 
@@ -865,19 +883,15 @@ def reconcile_groups(sid, desired_names, allow_remove=True, known=None, record=N
     return group_ids(sid), set(collided)
 
 
-def apply_changes(sid):
-    """Push what `changed` says was reconciled: gravity re-fetches adlists
-    (needed for adlist changes); a plain DNS restart is enough to pick up
-    domain-, group-, and client-list changes.
+def apply_changes(sid, need):
+    """Make FTL apply reconciled writes: `need` is apply_needed()'s answer.
 
     The gravity trigger does not retry a dropped connection: a lost ack may
     mean the rebuild already started, and a blind retry risks a second one
-    running against the same database swap. Failing hard leaves the box
-    either rebuilt (the first call landed) or not yet applied (it never
-    reached FTL) -- both states the next run finds and corrects; a stacked
-    second rebuild is not.
+    running against the same database swap. It fails hard instead; main()
+    then records the apply as pending, so the next run triggers it again.
     """
-    if changed["adlists"]:
+    if need == "gravity":
         print("Rebuilding gravity...")
         try:
             st, _ = api("POST", "/action/gravity", sid, retry_dropped=False)
@@ -887,7 +901,7 @@ def apply_changes(sid):
             die(f"gravity rebuild failed: connection dropped before a response ({e})")
         if st != 200:
             die(f"gravity rebuild failed (HTTP {st})")
-    elif any(changed.values()):
+    elif need == "dns":
         print("Reloading DNS...")
         api("POST", "/action/restartdns", sid, retry_dropped=True)  # 2 restarts = 1
 
@@ -915,6 +929,8 @@ def main():
     def flush():
         write_manifest(MANIFEST, manifest_out)
 
+    pending = manifest_out.get(_APPLY_PENDING)
+    applied = False
     sid = login()
     try:
         groups = discover_groups(GROUPS_DIR)
@@ -983,10 +999,21 @@ def main():
             allow_remove=groups_readable,
             known=known_identities(manifest_in, CLIENT.label, MANAGED))
 
-        apply_changes(sid)
+        apply_changes(sid, apply_needed(changed, pending))
+        applied = True
 
-        print("CHANGED" if any(changed.values()) else "no changes")
+        print("CHANGED" if any(changed.values()) or pending else "no changes")
     finally:
+        # Whatever stopped this run -- a failed apply, or a later reconcile
+        # step dying after earlier writes landed -- leaves those writes on the
+        # box unapplied, and the next run would see no drift to act on.
+        need = None if applied else apply_needed(changed, pending)
+        if need != pending:
+            if need:
+                manifest_out[_APPLY_PENDING] = need
+            else:
+                manifest_out.pop(_APPLY_PENDING, None)
+            flush()
         logout(sid)
 
     # Everything appliable has been applied; fail loudly so a hand-added collision

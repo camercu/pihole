@@ -368,7 +368,6 @@ def test_gravity_trigger_fails_hard_on_a_dropped_connection(monkeypatch):
     # Re-triggering gravity while an earlier, "failed" call actually started
     # it would overlap two rebuilds against the same database swap. A dropped
     # connection here should stop the run, not retry blind.
-    monkeypatch.setattr(deploy, "changed", {**deploy.changed, "adlists": True})
 
     def fake_api(method, path, sid=None, body=None, retry_dropped=True):
         raise ConnectionResetError("reset")
@@ -376,12 +375,11 @@ def test_gravity_trigger_fails_hard_on_a_dropped_connection(monkeypatch):
     monkeypatch.setattr(deploy, "api", fake_api)
 
     with pytest.raises(SystemExit):
-        deploy.apply_changes(None)
+        deploy.apply_changes(None, "gravity")
 
 
 def test_gravity_trigger_reports_a_timeout_as_a_timeout_not_a_dropped_connection(
         monkeypatch, capsys):
-    monkeypatch.setattr(deploy, "changed", {**deploy.changed, "adlists": True})
 
     def fake_api(method, path, sid=None, body=None, retry_dropped=True):
         raise TimeoutError("timed out")
@@ -389,7 +387,7 @@ def test_gravity_trigger_reports_a_timeout_as_a_timeout_not_a_dropped_connection
     monkeypatch.setattr(deploy, "api", fake_api)
 
     with pytest.raises(SystemExit):
-        deploy.apply_changes(None)
+        deploy.apply_changes(None, "gravity")
     err = capsys.readouterr().err
     assert "timed out" in err.lower()
     assert "dropped" not in err.lower()
@@ -402,10 +400,9 @@ def test_gravity_retry_dropped_false_is_wired_into_the_action_call(monkeypatch):
         seen["retry_dropped"] = retry_dropped
         return 200, {}
 
-    monkeypatch.setattr(deploy, "changed", {**deploy.changed, "adlists": True})
     monkeypatch.setattr(deploy, "api", fake_api)
 
-    deploy.apply_changes(None)
+    deploy.apply_changes(None, "gravity")
 
     assert seen["retry_dropped"] is False
 
@@ -442,6 +439,86 @@ def test_every_write_through_api_declares_whether_a_resend_is_safe():
 def test_api_refuses_a_write_that_does_not_declare_resend_safety():
     with pytest.raises(TypeError):
         deploy.api("POST", "/groups", body={})
+
+
+@pytest.mark.parametrize("changed_bucket, pending, need", [
+    (None, None, None),
+    ("adlists", None, "gravity"),
+    ("domains", None, "dns"),
+    (None, "gravity", "gravity"),
+    (None, "dns", "dns"),
+    ("domains", "gravity", "gravity"),  # gravity also reloads DNS
+    ("adlists", "dns", "gravity"),
+])
+def test_apply_needed_covers_this_runs_changes_and_an_earlier_runs_pending(
+        changed_bucket, pending, need):
+    changed = dict.fromkeys(deploy.changed, False)
+    if changed_bucket:
+        changed[changed_bucket] = True
+    assert deploy.apply_needed(changed, pending) == need
+
+
+def test_a_dropped_gravity_trigger_is_applied_by_the_next_run(tmp_path, monkeypatch):
+    # The first run adds an adlist, then its gravity trigger drops. The next
+    # run finds the box already matching the files -- no drift -- so without a
+    # durable record it would never rebuild gravity, and the new adlist would
+    # never load.
+    cfg = _base_state(monkeypatch, tmp_path)
+    (cfg / "adlists.txt").write_text("http://lists.example/a.txt\n",
+                                     encoding="utf-8")
+    lists = []
+    gravity_posts = []
+
+    def stub(method, path, sid=None, body=None, retry_dropped=None):
+        if method == "GET":
+            return 200, {
+                "/groups": {"groups": [
+                    {"id": 0, "name": "Default", "comment": None}]},
+                "/lists?type=block": {"lists": list(lists)},
+            }.get(path, {})
+        if method == "POST" and path == "/lists?type=block":
+            lists.extend({"address": a, "comment": body["comment"],
+                          "groups": body["groups"], "enabled": body["enabled"]}
+                         for a in body["address"])
+            return 201, {}
+        if path == "/action/gravity":
+            gravity_posts.append(path)
+            if len(gravity_posts) == 1:
+                raise ConnectionResetError("reset")
+        return 200, {}
+    monkeypatch.setattr(deploy, "api", stub)
+
+    with pytest.raises(SystemExit):
+        deploy.main()
+    monkeypatch.setattr(deploy, "changed", dict.fromkeys(deploy.changed, False))
+    deploy.main()
+
+    assert len(gravity_posts) == 2
+    manifest = deploy.read_manifest(str(cfg / ".manifest.json"))
+    assert deploy._APPLY_PENDING not in manifest
+
+
+def test_a_run_that_dies_after_a_write_leaves_the_apply_pending(tmp_path,
+                                                               monkeypatch):
+    # allow.list's entry lands, then a later GET fails for real. The written
+    # entry is on the box but DNS never reloaded; the next run sees no drift,
+    # so only the record left here gets it applied.
+    _base_state(monkeypatch, tmp_path, allow_list="kept.example\n")
+
+    def stub(method, path, sid=None, body=None, retry_dropped=None):
+        if method == "GET":
+            if path == "/clients":
+                return 500, {"error": "boom"}
+            return 200, {"/groups": {"groups": [
+                {"id": 0, "name": "Default", "comment": None}]}}.get(path, {})
+        return 200, {}
+    monkeypatch.setattr(deploy, "api", stub)
+
+    with pytest.raises(SystemExit):
+        deploy.main()
+
+    manifest = deploy.read_manifest(str(tmp_path / ".manifest.json"))
+    assert manifest[deploy._APPLY_PENDING] == "dns"
 
 
 def test_a_missing_config_root_is_not_an_empty_one(tmp_path):
