@@ -916,6 +916,165 @@ def test_a_collided_add_is_not_recorded_as_the_managed_identity(monkeypatch):
     assert record["allow/exact [managed by ansible]"] == []
 
 
+def test_a_self_retried_add_is_recognized_as_already_ours(monkeypatch):
+    # reconcile_membership's initial GET sees no "shared.example" yet, so it
+    # goes into `add`. The batch POST for it actually lands, but the
+    # connection drops before the ack; retry_transient re-POSTs the same
+    # batch and FTL answers "already present". By now the row really is on
+    # the box, carrying our own comment -- this run's own write, not a
+    # hand-added collision -- so it must be recorded as ours, not warned
+    # about or left out of the manifest.
+    monkeypatch.setattr(deploy, "collisions", [])
+    gets = {"n": 0}
+
+    def stub(method, path, sid=None, body=None):
+        if method == "GET":
+            gets["n"] += 1
+            if gets["n"] == 1:
+                return 200, {"domains": []}
+            return 200, {"domains": [
+                {"domain": "shared.example", "type": "allow", "kind": "exact",
+                 "comment": deploy.MANAGED, "groups": [0], "enabled": True}]}
+        if method == "POST":
+            return 400, {"error": {"message": "already present"}}
+        return 200, {}
+    monkeypatch.setattr(deploy, "api", stub)
+    record = {}
+
+    deploy.reconcile_membership(
+        "sid", deploy.allow_kind("exact"),
+        deploy.network_wide(["shared.example"]), record=record)
+
+    assert deploy.collisions == []
+    assert record["allow/exact [managed by ansible]"] == ["shared.example"]
+
+
+def test_reconcile_groups_self_retried_create_is_not_fatal(monkeypatch):
+    # reconcile_groups' initial GET sees no "kids" yet, so it goes into `add`.
+    # The create actually lands, but the connection drops before the ack;
+    # retry_transient re-POSTs and FTL answers a name conflict. The group
+    # really is there now, carrying our own comment, so the run must not die
+    # on a create that, from the box's point of view, already succeeded.
+    gets = {"n": 0}
+
+    def stub(method, path, sid=None, body=None):
+        if method == "GET":
+            gets["n"] += 1
+            if gets["n"] == 1:
+                return 200, {"groups": [
+                    {"id": 0, "name": "Default", "comment": None}]}
+            return 200, {"groups": [
+                {"id": 0, "name": "Default", "comment": None},
+                {"id": 5, "name": "kids", "comment": deploy.MANAGED}]}
+        if method == "POST" and path == "/groups":
+            return 400, {"error": {"message": "already present"}}
+        return 200, {}
+    monkeypatch.setattr(deploy, "api", stub)
+    monkeypatch.setattr(deploy, "collisions", [])
+    monkeypatch.setattr(deploy, "changed", dict.fromkeys(deploy.changed, False))
+    record = {}
+
+    name_to_id, collided = deploy.reconcile_groups("sid", ["kids"], record=record)
+
+    assert deploy.collisions == []
+    assert collided == set()
+    assert record["groups"] == ["kids"]
+
+
+def test_a_self_retried_add_is_recognized_even_when_a_manifest_already_lists_other_items(
+        monkeypatch):
+    # known is last run's manifest; a domain new to this run is, by
+    # definition, never in it yet. add_entries' corroboration must not
+    # require it -- that would make the corroboration dead on every run
+    # except the very first one ever, the opposite of when this race is
+    # actually likely (an established site's own reconcile triggering the
+    # DNS restart that then drops its own next connection).
+    monkeypatch.setattr(deploy, "collisions", [])
+    gets = {"n": 0}
+
+    def stub(method, path, sid=None, body=None):
+        if method == "GET":
+            gets["n"] += 1
+            if gets["n"] == 1:
+                return 200, {"domains": []}
+            return 200, {"domains": [
+                {"domain": "new.example", "type": "allow", "kind": "exact",
+                 "comment": deploy.MANAGED, "groups": [0], "enabled": True}]}
+        if method == "POST":
+            return 400, {"error": {"message": "already present"}}
+        return 200, {}
+    monkeypatch.setattr(deploy, "api", stub)
+    record = {}
+
+    deploy.reconcile_membership(
+        "sid", deploy.allow_kind("exact"),
+        deploy.network_wide(["new.example"]), record=record,
+        known={"other.example"})  # an established manifest, minus this new one
+
+    assert deploy.collisions == []
+    assert record["allow/exact [managed by ansible]"] == ["new.example"]
+
+
+def test_reconcile_groups_self_retried_create_is_recognized_even_when_a_manifest_already_lists_other_groups(
+        monkeypatch):
+    # Same bug as the add_entries case above, for group create.
+    gets = {"n": 0}
+
+    def stub(method, path, sid=None, body=None):
+        if method == "GET":
+            gets["n"] += 1
+            if gets["n"] == 1:
+                return 200, {"groups": [
+                    {"id": 0, "name": "Default", "comment": None},
+                    {"id": 9, "name": "other", "comment": deploy.MANAGED}]}
+            return 200, {"groups": [
+                {"id": 0, "name": "Default", "comment": None},
+                {"id": 9, "name": "other", "comment": deploy.MANAGED},
+                {"id": 5, "name": "kids", "comment": deploy.MANAGED}]}
+        if method == "POST" and path == "/groups":
+            return 400, {"error": {"message": "already present"}}
+        return 200, {}
+    monkeypatch.setattr(deploy, "api", stub)
+    monkeypatch.setattr(deploy, "collisions", [])
+    monkeypatch.setattr(deploy, "changed", dict.fromkeys(deploy.changed, False))
+    record = {}
+
+    name_to_id, collided = deploy.reconcile_groups(
+        "sid", ["kids"], known={"other"}, record=record)
+
+    assert deploy.collisions == []
+    assert collided == set()
+    assert record["groups"] == ["kids"]
+
+
+def test_a_collision_with_a_hand_commented_row_stays_a_collision(monkeypatch):
+    # The fresh GET finds the row, but under someone else's comment: that is
+    # a genuine hand-added entry, and the self-retry check must not absorb it.
+    monkeypatch.setattr(deploy, "collisions", [])
+    gets = {"n": 0}
+
+    def stub(method, path, sid=None, body=None):
+        if method == "GET":
+            gets["n"] += 1
+            if gets["n"] == 1:
+                return 200, {"domains": []}
+            return 200, {"domains": [
+                {"domain": "shared.example", "type": "allow", "kind": "exact",
+                 "comment": "added in the UI", "groups": [0], "enabled": True}]}
+        if method == "POST":
+            return 400, {"error": {"message": "already present"}}
+        return 200, {}
+    monkeypatch.setattr(deploy, "api", stub)
+    record = {}
+
+    deploy.reconcile_membership(
+        "sid", deploy.allow_kind("exact"),
+        deploy.network_wide(["shared.example"]), record=record)
+
+    assert deploy.collisions == [("allow/exact", "shared.example")]
+    assert record["allow/exact [managed by ansible]"] == []
+
+
 def test_normalize_groups_empty_means_default_group():
     # FTL may report a default-only entry as [] or [0]; both mean group 0.
     assert deploy.normalize_groups([]) == {0}

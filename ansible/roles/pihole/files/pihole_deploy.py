@@ -556,6 +556,35 @@ def fetch_domains(url):
     return [host_domain(line) for line in clean_lines(text)], True
 
 
+def _fetch_by_key(sid, path, collection, field):
+    """A fresh key -> row map for `path`, to corroborate a collision.
+
+    The caller's own snapshot predates this call's writes, so it cannot tell a
+    hand-added row from one this same call created moments ago (its ack lost
+    to a dropped connection, then retried into a collision). A fresh GET can.
+    """
+    st, j = api("GET", path, sid)
+    if st != 200:
+        return {}
+    return {x[field]: x for x in j.get(collection, [])}
+
+
+def _is_self_retried(rows_by_key, key, comment):
+    """True if `key`'s row, fetched fresh after a collision, carries `comment`
+    -- this call's own write landing twice, not a hand-added row.
+
+    Comment alone, with no manifest check. The caller's snapshot, taken before
+    any write, said `key` was absent, so a row now carrying our comment is
+    this call's own write -- short of someone typing our exact comment into
+    the admin UI for the same entry within the same few seconds. The manifest
+    cannot help here: it records the previous run, so a key new to this run is
+    never in it. Same trust the first run ever (no manifest) already places in
+    the comment.
+    """
+    row = rows_by_key.get(key)
+    return row is not None and row.get("comment") == comment
+
+
 def add_entries(sid, kind, items, extra, on_added=None):
     """POST items (as one batch), isolating hand-added collisions per item.
 
@@ -565,6 +594,11 @@ def add_entries(sid, kind, items, extra, on_added=None):
     non-collision error is still fatal. Returns (count actually added, items that
     collided) -- the caller needs the second half too, since a collided identity
     was never actually created and must not be recorded as this run's own.
+
+    A per-item collision is not always a hand-added row: the batch POST can
+    have landed with its ack lost to a dropped connection, so the retry
+    collides with an entry this very call created. _is_self_retried tells the
+    two apart.
 
     on_added, if given, is called with the items just confirmed live: once
     with the whole batch on the fast path (one POST, genuinely atomic), or
@@ -584,6 +618,7 @@ def add_entries(sid, kind, items, extra, on_added=None):
         die(f"adding {kind.label} failed (HTTP {st}): {j}")
     added = 0
     collided = []
+    live = None  # fetched at most once, only if a collision actually occurs
     for it in items:
         st, j = api("POST", kind.path, sid, {kind.field: [it], **extra})
         if st in (200, 201):
@@ -591,6 +626,13 @@ def add_entries(sid, kind, items, extra, on_added=None):
             if on_added:
                 on_added([it])
         elif is_collision(st, j):
+            if live is None:
+                live = _fetch_by_key(sid, kind.path, kind.collection, kind.field)
+            if _is_self_retried(live, it, extra.get("comment")):
+                added += 1
+                if on_added:
+                    on_added([it])
+                continue
             collisions.append((kind.label, it))
             collided.append(it)
             print(f"WARN: {kind.label} {it!r} already exists as a hand-added entry; "
@@ -772,6 +814,16 @@ def reconcile_groups(sid, desired_names, allow_remove=True, known=None, record=N
         st, j = api("POST", "/groups", sid,
                     {"name": name, "comment": MANAGED, "enabled": True})
         if st not in (200, 201):
+            # Same self-retry race add_entries corroborates: the create may
+            # have landed with its ack lost, and the retried POST now bounces
+            # off the group it made. A genuine mid-run name clash stays fatal.
+            if is_collision(st, j) and _is_self_retried(
+                    _fetch_by_key(sid, "/groups", "groups", "name"), name, MANAGED):
+                changed["groups"] = True
+                print(f"  + group {name}")
+                confirmed.add(name)
+                _sync()
+                continue
             die(f"adding group {name!r} failed (HTTP {st}): {j}")
         changed["groups"] = True
         print(f"  + group {name}")
