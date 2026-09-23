@@ -363,7 +363,7 @@ changed = {"adlists": False, "domains": False, "groups": False, "clients": False
 collisions = []
 
 
-def retry_transient(call, sleep=None, waits=_DB_RETRY_WAITS):
+def retry_transient(call, sleep=None, waits=_DB_RETRY_WAITS, retry_dropped=True):
     """Repeat `call` while it answers with a transient database condition, or
     while the connection itself drops.
 
@@ -371,7 +371,9 @@ def retry_transient(call, sleep=None, waits=_DB_RETRY_WAITS):
     "not yet, ask again" window as a locked database, just signalled by an
     exception instead of a body. A timeout is not that window -- it means FTL
     is still there but slow, so it is left to propagate rather than turning one
-    bounded wait into several. Returns the first settled answer — or the last
+    bounded wait into several. retry_dropped=False turns off the drop retry
+    too, for a caller whose own retry would be worse than the drop -- see
+    api()'s docstring. Returns the first settled answer — or the last
     transient one, once the waits run out, so the caller still sees FTL's own
     words and fails on them. Bounded on purpose: an API that never comes back
     is a real fault, and a run that hangs on it is worse than one that stops.
@@ -381,7 +383,7 @@ def retry_transient(call, sleep=None, waits=_DB_RETRY_WAITS):
         try:
             status, body = call()
         except OSError as e:
-            if is_timeout(e):
+            if is_timeout(e) or not retry_dropped:
                 raise
             sleep(wait)
             continue
@@ -391,13 +393,15 @@ def retry_transient(call, sleep=None, waits=_DB_RETRY_WAITS):
     return call()
 
 
-def api(method, path, sid=None, body=None):
+def api(method, path, sid=None, body=None, retry_dropped=True):
     """Call the FTL API. Returns (status_code, decoded_json_or_text).
 
     Every call the script makes comes through here, so this is where waiting out
     a database swap belongs: a locked or read-only answer means the call has not
     happened yet, and the alternative — dying on it — aborts a whole deploy for
-    a window that closes on its own.
+    a window that closes on its own. retry_dropped=False is for a call whose
+    blind retry is worse than the drop itself: a lost ack can mean the call
+    already acted, and acting twice does harm.
     """
     url = API + path
     if sid:
@@ -409,7 +413,7 @@ def api(method, path, sid=None, body=None):
         method=method,
         headers={"Content-Type": "application/json", "Accept": "application/json"},
     )
-    return retry_transient(lambda: _request(req))
+    return retry_transient(lambda: _request(req), retry_dropped=retry_dropped)
 
 
 def _request(req):
@@ -776,6 +780,33 @@ def reconcile_groups(sid, desired_names, allow_remove=True, known=None, record=N
     return group_ids(sid), set(collided)
 
 
+def apply_changes(sid):
+    """Push what `changed` says was reconciled: gravity re-fetches adlists
+    (needed for adlist changes); a plain DNS restart is enough to pick up
+    domain-, group-, and client-list changes.
+
+    The gravity trigger does not retry a dropped connection: a lost ack may
+    mean the rebuild already started, and a blind retry risks a second one
+    running against the same database swap. Failing hard leaves the box
+    either rebuilt (the first call landed) or not yet applied (it never
+    reached FTL) -- both states the next run finds and corrects; a stacked
+    second rebuild is not.
+    """
+    if changed["adlists"]:
+        print("Rebuilding gravity...")
+        try:
+            st, _ = api("POST", "/action/gravity", sid, retry_dropped=False)
+        except OSError as e:
+            if is_timeout(e):
+                die(f"gravity rebuild failed: FTL did not respond in time ({e})")
+            die(f"gravity rebuild failed: connection dropped before a response ({e})")
+        if st != 200:
+            die(f"gravity rebuild failed (HTTP {st})")
+    elif any(changed.values()):
+        print("Reloading DNS...")
+        api("POST", "/action/restartdns", sid)
+
+
 def main():
     if config_root_missing(DIR):
         die(f"config root {DIR!r} does not exist; refusing to reconcile, since "
@@ -867,16 +898,7 @@ def main():
             allow_remove=groups_readable,
             known=known_identities(manifest_in, CLIENT.label, MANAGED))
 
-        # Apply: gravity re-fetches adlists (needed for adlist changes); a plain DNS
-        # restart is enough to pick up domain-, group-, and client-list changes.
-        if changed["adlists"]:
-            print("Rebuilding gravity...")
-            st, _ = api("POST", "/action/gravity", sid)
-            if st != 200:
-                die(f"gravity rebuild failed (HTTP {st})")
-        elif any(changed.values()):
-            print("Reloading DNS...")
-            api("POST", "/action/restartdns", sid)
+        apply_changes(sid)
 
         print("CHANGED" if any(changed.values()) else "no changes")
     finally:

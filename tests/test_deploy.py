@@ -297,6 +297,63 @@ def test_wiring_that_makes_the_call_picks_up_the_real_default_sleep(monkeypatch)
     assert slept == [deploy._DB_RETRY_WAITS[0]]
 
 
+def test_a_dropped_connection_is_not_retried_when_the_caller_opts_out():
+    slept = []
+
+    def call():
+        raise ConnectionResetError("reset")
+
+    with pytest.raises(ConnectionResetError):
+        deploy.retry_transient(call, sleep=slept.append, retry_dropped=False)
+    assert slept == []
+
+
+def test_gravity_trigger_fails_hard_on_a_dropped_connection(monkeypatch):
+    # Re-triggering gravity while an earlier, "failed" call actually started
+    # it would overlap two rebuilds against the same database swap. A dropped
+    # connection here should stop the run, not retry blind.
+    monkeypatch.setattr(deploy, "changed", {**deploy.changed, "adlists": True})
+
+    def fake_api(method, path, sid=None, body=None, retry_dropped=True):
+        raise ConnectionResetError("reset")
+
+    monkeypatch.setattr(deploy, "api", fake_api)
+
+    with pytest.raises(SystemExit):
+        deploy.apply_changes(None)
+
+
+def test_gravity_trigger_reports_a_timeout_as_a_timeout_not_a_dropped_connection(
+        monkeypatch, capsys):
+    monkeypatch.setattr(deploy, "changed", {**deploy.changed, "adlists": True})
+
+    def fake_api(method, path, sid=None, body=None, retry_dropped=True):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(deploy, "api", fake_api)
+
+    with pytest.raises(SystemExit):
+        deploy.apply_changes(None)
+    err = capsys.readouterr().err
+    assert "timed out" in err.lower()
+    assert "dropped" not in err.lower()
+
+
+def test_gravity_retry_dropped_false_is_wired_into_the_action_call(monkeypatch):
+    seen = {}
+
+    def fake_api(method, path, sid=None, body=None, retry_dropped=True):
+        seen["retry_dropped"] = retry_dropped
+        return 200, {}
+
+    monkeypatch.setattr(deploy, "changed", {**deploy.changed, "adlists": True})
+    monkeypatch.setattr(deploy, "api", fake_api)
+
+    deploy.apply_changes(None)
+
+    assert seen["retry_dropped"] is False
+
+
 def test_a_missing_config_root_is_not_an_empty_one(tmp_path):
     # Pointing PIHOLE_DIR at a path that is not there deleted every managed
     # entry and reported success, because absent read as empty everywhere.
