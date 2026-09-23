@@ -903,7 +903,10 @@ def apply_changes(sid, need):
             die(f"gravity rebuild failed (HTTP {st})")
     elif need == "dns":
         print("Reloading DNS...")
-        api("POST", "/action/restartdns", sid, retry_dropped=True)  # 2 restarts = 1
+        st, j = api("POST", "/action/restartdns", sid,
+                    retry_dropped=True)  # 2 restarts = 1
+        if st != 200:
+            die(f"DNS reload failed (HTTP {st}): {j}")
 
 
 def main():

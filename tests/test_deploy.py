@@ -458,6 +458,18 @@ def test_apply_needed_covers_this_runs_changes_and_an_earlier_runs_pending(
     assert deploy.apply_needed(changed, pending) == need
 
 
+def test_a_failed_dns_reload_stops_the_run(monkeypatch):
+    # A reload FTL refused did not apply anything; returning normally would
+    # let main() clear the pending apply and strand the writes unapplied.
+    def fake_api(method, path, sid=None, body=None, retry_dropped=None):
+        return 500, {"error": "boom"}
+
+    monkeypatch.setattr(deploy, "api", fake_api)
+
+    with pytest.raises(SystemExit):
+        deploy.apply_changes(None, "dns")
+
+
 def test_a_dropped_gravity_trigger_is_applied_by_the_next_run(tmp_path, monkeypatch):
     # The first run adds an adlist, then its gravity trigger drops. The next
     # run finds the box already matching the files -- no drift -- so without a
