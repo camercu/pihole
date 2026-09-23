@@ -61,9 +61,10 @@ _TRANSIENT_DB = ("database is locked", "readonly database")
 # swap (well under a second in practice) without letting a genuinely stuck
 # database hold the playbook for more than about a quarter of a minute.
 _DB_RETRY_WAITS = (0.25, 0.5, 1, 2, 4, 8)
-# Statuses meaning a delete's target is gone. FTL answers 404 when none of the
-# items exist -- which is also what a resend gets after the first delete
-# landed and its ack was lost -- and absence is what a delete is for.
+# Statuses a delete may answer when its targets are gone. FTL answers 404 when
+# none of the items exist -- also what a resend gets after the first delete
+# landed and its ack was lost -- but a 404 can have other causes, so it counts
+# only once _confirm_gone re-reads the collection.
 _DELETED = (200, 204, 404)
 
 
@@ -618,6 +619,21 @@ def _fetch_by_key(sid, path, collection, field):
     return {x[field]: x for x in j.get(collection, [])}
 
 
+def _confirm_gone(sid, path, collection, field, keys, what):
+    """After a delete answered 404, die unless a fresh read shows every key gone.
+
+    Accepting the 404 unread would drop still-live rows from the manifest --
+    orphaning them, never deleted and never again treated as managed.
+    """
+    st, j = api("GET", path, sid)
+    if st != 200:
+        die(f"removing {what}: got 404, and re-reading to confirm failed "
+            f"(HTTP {st}): {j}")
+    left = sorted(set(keys) & {x[field] for x in j.get(collection, [])})
+    if left:
+        die(f"removing {what} failed (HTTP 404); still present: {', '.join(left)}")
+
+
 def _is_self_retried(rows_by_key, key, comment):
     """True if `key`'s row, fetched fresh after a collision, carries `comment`
     -- this call's own write landing twice, not a hand-added row.
@@ -782,6 +798,9 @@ def reconcile_membership(sid, kind, desired, allow_remove=True, comment=MANAGED,
                     retry_dropped=True)  # a resend's 404 is in _DELETED
         if st not in _DELETED:
             die(f"removing {kind.label} failed (HTTP {st}): {j}")
+        if st == 404:
+            _confirm_gone(sid, kind.path, kind.collection, kind.field, remove,
+                          kind.label)
         changed[kind.bucket] = True
         print(f"  - {len(remove)} {kind.label}: {', '.join(sorted(remove))}")
         confirmed.difference_update(remove)
@@ -896,6 +915,9 @@ def reconcile_groups(sid, desired_names, allow_remove=True, known=None, record=N
                         retry_dropped=True)  # a resend's 404 is in _DELETED
             if st not in _DELETED:
                 die(f"removing group {name!r} failed (HTTP {st}): {j}")
+            if st == 404:
+                _confirm_gone(sid, "/groups", "groups", "name", [name],
+                              f"group {name!r}")
             changed["groups"] = True
             print(f"  - group {name}")
 

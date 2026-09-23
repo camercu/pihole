@@ -1222,15 +1222,28 @@ def test_a_collision_with_a_hand_commented_row_stays_a_collision(monkeypatch):
     assert record["allow/exact [managed by ansible]"] == []
 
 
-def test_a_batch_delete_answering_404_is_already_done(monkeypatch):
+def _row_then(first, later_present):
+    """GET answers: the row on the first read; afterwards, only if still there."""
+    reads = {"n": 0}
+
+    def rows():
+        reads["n"] += 1
+        return [first] if reads["n"] == 1 or later_present else []
+    return rows
+
+
+def test_a_batch_delete_answering_404_is_done_once_a_reread_confirms_it(
+        monkeypatch):
     # FTL answers a batchDelete with 404 when none of its items exist -- the
     # answer a resend gets after the first delete landed and its ack was
-    # lost. The goal of a delete is absence, so absence is success.
+    # lost. Absence is what a delete is for, so a confirmed absence is success.
+    rows = _row_then({"domain": "gone.example", "type": "allow", "kind": "exact",
+                      "comment": deploy.MANAGED, "groups": [0], "enabled": True},
+                     later_present=False)
+
     def stub(method, path, sid=None, body=None, retry_dropped=None):
         if method == "GET":
-            return 200, {"domains": [
-                {"domain": "gone.example", "type": "allow", "kind": "exact",
-                 "comment": deploy.MANAGED, "groups": [0], "enabled": True}]}
+            return 200, {"domains": rows()}
         if path == "/domains:batchDelete":
             return 404, {"took": 0.0001}
         return 200, {}
@@ -1244,12 +1257,38 @@ def test_a_batch_delete_answering_404_is_already_done(monkeypatch):
     assert record["allow/exact [managed by ansible]"] == []
 
 
-def test_a_group_delete_answering_404_is_already_done(monkeypatch):
+def test_a_batch_delete_answering_404_with_the_item_still_there_is_fatal(
+        monkeypatch):
+    # A 404 for some other reason (an item or type mismatch, a changed route)
+    # must not drop a live row from the manifest and orphan it.
+    rows = _row_then({"domain": "kept.example", "type": "allow", "kind": "exact",
+                      "comment": deploy.MANAGED, "groups": [0], "enabled": True},
+                     later_present=True)
+
     def stub(method, path, sid=None, body=None, retry_dropped=None):
         if method == "GET":
-            return 200, {"groups": [
-                {"id": 0, "name": "Default", "comment": None},
-                {"id": 5, "name": "old", "comment": deploy.MANAGED}]}
+            return 200, {"domains": rows()}
+        if path == "/domains:batchDelete":
+            return 404, {"took": 0.0001}
+        return 200, {}
+    monkeypatch.setattr(deploy, "api", stub)
+    monkeypatch.setattr(deploy, "changed", dict.fromkeys(deploy.changed, False))
+
+    with pytest.raises(SystemExit):
+        deploy.reconcile_membership("sid", deploy.allow_kind("exact"), {},
+                                    record={})
+
+
+@pytest.mark.parametrize("still_there", [False, True])
+def test_a_group_delete_answering_404_counts_only_once_confirmed_gone(
+        monkeypatch, still_there):
+    rows = _row_then({"id": 5, "name": "old", "comment": deploy.MANAGED},
+                     later_present=still_there)
+
+    def stub(method, path, sid=None, body=None, retry_dropped=None):
+        if method == "GET":
+            return 200, {"groups": [{"id": 0, "name": "Default", "comment": None},
+                                    *rows()]}
         if method == "DELETE":
             return 404, {"took": 0.0001}
         return 200, {}
@@ -1257,9 +1296,12 @@ def test_a_group_delete_answering_404_is_already_done(monkeypatch):
     monkeypatch.setattr(deploy, "collisions", [])
     monkeypatch.setattr(deploy, "changed", dict.fromkeys(deploy.changed, False))
 
-    deploy.reconcile_groups("sid", [])
-
-    assert deploy.changed["groups"] is True
+    if still_there:
+        with pytest.raises(SystemExit):
+            deploy.reconcile_groups("sid", [])
+    else:
+        deploy.reconcile_groups("sid", [])
+        assert deploy.changed["groups"] is True
 
 
 def test_normalize_groups_empty_means_default_group():
