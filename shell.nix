@@ -23,4 +23,13 @@ pkgs.mkShell {
     restic # backup round-trip in the integration tests (matches the backup role)
     (python3.withPackages (ps: [ ps.pytest ])) # unit tests for the helper scripts
   ];
+
+  # Install the git pre-commit hook on entering the env, so no clone depends on
+  # someone remembering `pre-commit install`.
+  shellHook = ''
+    hook="$(git rev-parse --git-path hooks/pre-commit 2>/dev/null)"
+    if [ -n "$hook" ] && [ ! -e "$hook" ]; then
+      pre-commit install >/dev/null
+    fi
+  '';
 }

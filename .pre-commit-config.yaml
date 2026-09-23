@@ -1,26 +1,21 @@
-# Safety-net hooks. All run local binaries from the nix env (no hook envs are
-# downloaded), so versions match CI and the repo's "run tools via nix" rule.
-# Install once: `pre-commit install` (inside nix-shell / direnv).
+# Commit gate: the same `just` recipes CI runs (.github/workflows/ci.yml), so
+# a commit that passes here passes CI's lint + unit-test job. The justfile is
+# the one definition; these hooks only call it. Local binaries from the nix env
+# (no hook envs downloaded). shell.nix installs the hook on entering the env.
 # Run manually: `pre-commit run --all-files`.
 repos:
   - repo: local
     hooks:
-      - id: ruff
-        name: ruff (lint)
-        entry: ruff check --force-exclude
+      - id: lint
+        name: just lint (ruff + ansible-lint)
+        entry: just lint
         language: system
-        types: [python]
-
-      - id: pytest
-        name: pytest (helper-script unit tests)
-        entry: pytest -q
-        language: system
-        types: [python]
+        files: \.(py|ya?ml)$
         pass_filenames: false
 
-      - id: ansible-lint
-        name: ansible-lint
-        entry: ansible-lint -q
+      - id: test
+        name: just test (unit tests)
+        entry: just test
         language: system
-        files: ^ansible/.*\.ya?ml$
+        types: [python]
         pass_filenames: false

@@ -9,7 +9,7 @@ lint:
     ruff check .
     cd ansible && ansible-lint
 
-# Quick pre-commit gate: ruff lint + fast unit tests (`lint` adds ansible-lint).
+# Quick check: ruff lint + fast unit tests (`lint` adds ansible-lint).
 check:
     ruff check .
     just test

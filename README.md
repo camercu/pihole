@@ -131,8 +131,10 @@ nix-shell --run 'just lint'                     # ruff + ansible-lint
 nix-shell --run 'just test'                     # fast unit tests
 nix-shell --run 'just test-full'                # + real-container integration tests
 nix-shell --run 'pre-commit run --all-files'   # lint + unit tests at once
-nix-shell --run 'pre-commit install'           # run them on every git commit
 ```
+
+Entering the nix env (`nix-shell` or direnv) installs a git pre-commit hook
+that runs `just lint` and `just test` — the same checks as CI — on every commit.
 
 ## Tests
 
