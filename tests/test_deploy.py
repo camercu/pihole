@@ -1162,7 +1162,7 @@ def test_a_self_retried_add_is_recognized_even_when_a_manifest_already_lists_oth
     assert record["allow/exact [managed by ansible]"] == ["new.example"]
 
 
-def test_reconcile_groups_self_retried_create_is_recognized_even_when_a_manifest_already_lists_other_groups(
+def test_a_self_retried_group_create_is_recognized_when_the_manifest_lists_others(
         monkeypatch):
     # Same bug as the add_entries case above, for group create.
     gets = {"n": 0}

@@ -27,8 +27,8 @@ one (warned and skipped, so the rest of the run still converges).
 Structure: the pure functions below (clean_lines, is_regex, split_allow,
 host_domain, plan_membership, build_membership, network_wide, assemble_desired,
 normalize_groups, discover_groups, resolve_password, is_collision, is_transient,
-is_timeout, apply_needed, config_root_missing, missing_inputs, groups_root_missing) hold the decision
-logic and are unit-tested;
+is_timeout, apply_needed, config_root_missing, missing_inputs,
+groups_root_missing) hold the decision logic and are unit-tested;
 everything that touches the network or filesystem is the thin shell beneath them.
 retry_transient sits in that shell and is unit-tested too, by injecting its wait.
 """
