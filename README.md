@@ -330,9 +330,10 @@ file is unrecoverable.
 `just deploy`, `verify`, `mirror`, and `adopt` reach the Pi through
 `scripts/with-deploy-key.sh`. When the macOS keychain holds a 1Password service
 account token under `pihole-op-token`, the script loads the Pi's key from
-`op://Pihole/pihole-ssh` into a private ssh-agent for at most an hour, so no
-Touch ID prompt appears. Override either name with `PIHOLE_OP_TOKEN_SERVICE` or
-`PIHOLE_OP_SSH_KEY`. Without the token, the recipes use your own agent. The
+`op://Pihole/pihole-ssh/private key` into a private ssh-agent for at most an
+hour, so no Touch ID prompt appears. Override the keychain name with
+`PIHOLE_OP_TOKEN_SERVICE`, and the key with `PIHOLE_OP_SSH_KEY`, a reference to
+the private key field (the script adds `?ssh-format=openssh`). Without the token, the recipes use your own agent. The
 key's public half belongs in `authorized_ssh_keys`.
 
 ```bash
