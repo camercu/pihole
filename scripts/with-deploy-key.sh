@@ -16,4 +16,7 @@ trap 'exit 130' INT TERM
 OP_SERVICE_ACCOUNT_TOKEN="$token" \
   op read "${PIHOLE_OP_SSH_KEY:-op://Pihole/pihole-ssh/private key}?ssh-format=openssh" |
   ssh-add -q -
-"$@"
+# ~/.ssh/config may name another agent and key for the Pi (IdentityAgent beats
+# SSH_AUTH_SOCK, IdentitiesOnly hides unlisted keys). Flags beat the config.
+ANSIBLE_SSH_COMMON_ARGS="-o IdentityAgent=$SSH_AUTH_SOCK -o IdentitiesOnly=no" \
+  "$@"
