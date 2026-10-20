@@ -306,7 +306,8 @@ via `pihole_web_password`. The passphrase that decrypts it lives in the
 the repo has their own.
 
 `direnv` auto-exports `ANSIBLE_VAULT_PASSWORD_FILE` when `ansible/.vault-pass`
-exists, so Ansible commands just work. Without direnv, add `--ask-vault-pass`.
+exists, so Ansible commands just work. The `just` recipes that reach the Pi do
+the same without direnv. Elsewhere without direnv, add `--ask-vault-pass`.
 
 ```bash
 # Change the stored password, then re-run so `pihole setpassword` applies it:

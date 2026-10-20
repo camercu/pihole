@@ -6,6 +6,12 @@
 # the macOS keychain (service PIHOLE_OP_TOKEN_SERVICE). With no such entry,
 # the command runs as-is, with whatever agent the caller already has.
 set -eu
+# The vault passphrase, as .envrc loads it, so recipes also work under plain
+# nix-shell. No file: leave the caller's setting alone.
+vault_pass="$(cd "$(dirname "$0")/.." && pwd)/ansible/.vault-pass"
+if [ -z "${ANSIBLE_VAULT_PASSWORD_FILE:-}" ] && [ -f "$vault_pass" ]; then
+  export ANSIBLE_VAULT_PASSWORD_FILE="$vault_pass"
+fi
 token="$(security find-generic-password -a "$USER" -s "${PIHOLE_OP_TOKEN_SERVICE:-pihole-op-token}" -w 2>/dev/null || true)"
 if [ -z "$token" ]; then
   exec "$@"
