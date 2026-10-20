@@ -25,3 +25,8 @@ authorized_ssh_keys: []
 # the rest are aliases. Empty default => /etc/hosts gets only the localhost
 # block and unbound serves no local records.
 lan_hosts: []
+
+# Whole zones answered with one address: every name under `name`, at any
+# depth, resolves to `ip` (unbound `local-zone ... redirect`). For a host that
+# serves many names behind one reverse proxy.
+lan_zones: []

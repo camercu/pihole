@@ -31,6 +31,11 @@ authorized_ssh_keys: []
 #     names: [router, router.home.arpa]
 #   - ip: 192.168.1.2
 #     names: [pihole, pi.hole, pihole.home.arpa]
+# Whole zones -> one address (unbound redirect zone), e.g. a homelab behind a
+# reverse proxy. The ip may be looked up from another repo's inventory.
+# lan_zones:
+#   - name: lab.example.com
+#     ip: 192.168.1.5
 
 # Subnet allowed through the host firewall (SSH/DNS/HTTPS/mDNS).
 # hardening_lan_subnet: 192.168.1.0/24

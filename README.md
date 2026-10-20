@@ -190,6 +190,8 @@ never edit tracked files (see `local.yml.example` for the full shape):
 
 - **LAN hosts / `/etc/hosts`** — `lan_hosts` (also served as unbound
   split-horizon A records)
+- **LAN zones** — `lan_zones`: every name under a domain resolves to one
+  address (unbound redirect zone)
 - **Firewall subnet** — `hardening_lan_subnet`
 - **Timezone / locale** — `system_timezone`, `system_locale`
 - **Backup NAS** — `backup_nas_host`

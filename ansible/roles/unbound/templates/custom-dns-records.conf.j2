@@ -1,7 +1,11 @@
-{# Managed by Ansible (roles/unbound). Derived from lan_hosts (group_vars). #}
+{# Managed by Ansible (roles/unbound). Derived from lan_hosts and lan_zones (group_vars). #}
 server:
 {% for host in lan_hosts %}
 {% for name in host.names %}
   local-data: "{{ name }} A {{ host.ip }}"
 {% endfor %}
+{% endfor %}
+{% for zone in lan_zones %}
+  local-zone: "{{ zone.name }}." redirect
+  local-data: "{{ zone.name }}. A {{ zone.ip }}"
 {% endfor %}
