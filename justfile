@@ -27,9 +27,12 @@ test:
 test-full:
     PIHOLE_IT=1 pytest -q
 
+# Pass --tags to limit it. Recipes that reach the Pi run under
+# scripts/with-deploy-key.sh, so they need no Touch ID when a 1Password
+# service account token is set up (README "Unattended runs").
 [doc("Apply this repo's configuration to the Pi")]
-deploy:
-    cd ansible && ansible-playbook site.yml
+deploy *args:
+    cd ansible && ../scripts/with-deploy-key.sh ansible-playbook site.yml {{args}}
 
 # Additions and deletions both, so the UI can be where you work. Writes into
 # ansible/roles/pihole/files/; review with `git diff` before committing. Never
@@ -37,10 +40,14 @@ deploy:
 # so; re-run as `just mirror force=true` if everything really was deleted.
 [doc("Capture changes made by hand in the admin UI into the config files")]
 mirror force="false":
-    cd ansible && ansible-playbook mirror.yml -e mirror_force_prune={{force}}
+    cd ansible && ../scripts/with-deploy-key.sh ansible-playbook mirror.yml -e mirror_force_prune={{force}}
 
 # Run after committing the mirror diff AND deploying it: adopt refuses while the
 # Pi is reconciling from config files other than the ones you just reviewed.
 [doc("Hand entries captured by `just mirror` over to the reconciler")]
 adopt:
-    cd ansible && ansible-playbook adopt.yml
+    cd ansible && ../scripts/with-deploy-key.sh ansible-playbook adopt.yml
+
+[doc("Check the live Pi's health and drift")]
+verify:
+    cd ansible && ../scripts/with-deploy-key.sh ansible-playbook verify.yml

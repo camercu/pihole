@@ -324,6 +324,20 @@ keep the Teleporter export authenticating.
 ⚠️ Back up the **passphrase** (password manager) — lose it and the encrypted
 file is unrecoverable.
 
+## Unattended runs
+
+`just deploy`, `verify`, `mirror`, and `adopt` reach the Pi through
+`scripts/with-deploy-key.sh`. When the macOS keychain holds a 1Password service
+account token under `pihole-op-token`, the script loads the Pi's key from
+`op://Pihole/pihole-ssh` into a private ssh-agent for at most an hour, so no
+Touch ID prompt appears. Override either name with `PIHOLE_OP_TOKEN_SERVICE` or
+`PIHOLE_OP_SSH_KEY`. Without the token, the recipes use your own agent. The
+key's public half belongs in `authorized_ssh_keys`.
+
+```bash
+security add-generic-password -a "$USER" -s pihole-op-token -w   # paste token
+```
+
 ## Backups
 
 The `backup` role exports a Pi-hole **Teleporter** bundle (all config: adlists,
