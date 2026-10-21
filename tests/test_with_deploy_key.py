@@ -53,14 +53,15 @@ def test_ansible_ssh_uses_the_private_agent(tmp_path):
 
 
 def test_agent_stops_when_the_command_exits(tmp_path):
-    # GIVEN a command that reports its agent's PID
+    # GIVEN a command that reports its agent's socket
     env, _ = wrapper_env(tmp_path)
     result = subprocess.run(
-        [SCRIPT, "sh", "-c", "echo $SSH_AGENT_PID"], env=env, capture_output=True, text=True
+        [SCRIPT, "sh", "-c", "echo $SSH_AUTH_SOCK"], env=env, capture_output=True, text=True
     )
-    # WHEN the wrapper returns THEN that agent no longer runs
-    alive = subprocess.run(["kill", "-0", result.stdout.strip()], capture_output=True)
-    assert alive.returncode != 0
+    sock = Path(result.stdout.strip())
+    assert sock.is_absolute(), result.stdout + result.stderr
+    # WHEN the wrapper returns THEN that agent is gone, and its socket with it
+    assert not sock.exists()
 
 
 def test_failing_command_fails_the_wrapper(tmp_path):
