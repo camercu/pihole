@@ -3,6 +3,7 @@ Pi's deploy key, or runs it as-is when no 1Password token is set up."""
 
 import os
 import subprocess
+import time
 from pathlib import Path
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "with-deploy-key.sh"
@@ -60,7 +61,11 @@ def test_agent_stops_when_the_command_exits(tmp_path):
     )
     sock = Path(result.stdout.strip())
     assert sock.is_absolute(), result.stdout + result.stderr
-    # WHEN the wrapper returns THEN that agent is gone, and its socket with it
+    # WHEN the wrapper returns THEN that agent is gone, and its socket with it;
+    # the agent removes the socket as it exits, so allow it a moment
+    deadline = time.monotonic() + 5
+    while sock.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
     assert not sock.exists()
 
 
