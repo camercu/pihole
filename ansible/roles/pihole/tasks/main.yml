@@ -166,7 +166,8 @@
 # decision logic is; this task is the thin shell that hands it the two `find`
 # results and gets back what to remove. Runs on the controller (like the
 # `find` above) since pihole_deploy.py isn't deployed to the box until later
-# in this role, and the diff itself touches neither host's filesystem.
+# in this role, and the diff itself touches neither host's filesystem. Being
+# pure, it runs in check mode too, so --check previews the real prunes.
 - name: Compute group config no longer described by this repo
   ansible.builtin.command:
     cmd: "python3 {{ role_path }}/files/pihole_deploy.py prune-groups"
@@ -180,6 +181,7 @@
   delegate_to: localhost
   become: false
   changed_when: false
+  check_mode: false
   tags: [pihole_group_prune]
 
 # Files before directories, longest path first (pihole_group_prune.stdout is
