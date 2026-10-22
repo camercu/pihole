@@ -26,9 +26,13 @@ pkgs.mkShell {
 
   # Install the git pre-commit hook on entering the env, so no clone depends on
   # someone remembering `pre-commit install`.
+  # direnv exports this hook as $shellHook, and `nix-shell -p` runs an inherited
+  # $shellHook in whatever repo it starts in; the config check keeps it from
+  # installing a hook that blocks every commit in a repo without pre-commit.
   shellHook = ''
     hook="$(git rev-parse --git-path hooks/pre-commit 2>/dev/null)"
-    if [ -n "$hook" ] && [ ! -e "$hook" ]; then
+    top="$(git rev-parse --show-toplevel 2>/dev/null)"
+    if [ -n "$hook" ] && [ ! -e "$hook" ] && [ -f "$top/.pre-commit-config.yaml" ]; then
       pre-commit install >/dev/null
     fi
   '';
